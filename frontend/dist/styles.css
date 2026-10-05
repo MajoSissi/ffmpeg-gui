@@ -1,0 +1,855 @@
+/* ==========================================================================
+   FFmpeg GUI — Material Design 3 (dark), restrained palette
+   One accent (blue) + semantic status colours. Nothing else.
+   ========================================================================== */
+
+:root {
+  /* accent */
+  --primary: #a8c7fa;
+  --on-primary: #06305f;
+  --primary-container: #1c4a8a;
+  --on-primary-container: #d8e5ff;
+  --primary-hover: #bcd5ff;
+
+  /* surfaces */
+  --bg: #0f1116;
+  --surface: #12141a;
+  --surface-1: #171a20;
+  --surface-2: #1d2027;
+  --surface-3: #24272f;
+  --surface-4: #2b2f37;
+
+  --on-surface: #e3e4ea;
+  --on-surface-var: #bdc1cb;
+  --on-surface-dim: #8e929c;
+
+  --outline: #3a3f48;
+  --outline-strong: #4d525c;
+
+  /* semantic */
+  --ok: #8fdcae;
+  --ok-bg: #16301f;
+  --warn: #f0cf92;
+  --warn-bg: #33280f;
+  --err: #ffb3ac;
+  --err-bg: #3a1a19;
+  --muted: #a6aab4;
+  --muted-bg: #24272e;
+
+  --radius-s: 8px;
+  --radius: 12px;
+  --radius-l: 16px;
+
+  --font: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+
+  --rail-w: 92px;
+  --top-h: 60px;
+  --ctl-h: 34px;
+}
+
+* { box-sizing: border-box; }
+
+/* `display` on a class beats the UA rule for [hidden], so make it explicit. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--on-surface);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { user-select: none; }
+input, textarea, select, .selectable { user-select: text; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #33373f;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #454a54; background-clip: content-box; }
+
+.icon { width: 18px; height: 18px; flex: none; fill: currentColor; }
+.icon.sm { width: 15px; height: 15px; }
+.icon.lg { width: 22px; height: 22px; }
+
+/* ==========================================================================
+   Shell
+   ========================================================================== */
+
+.app {
+  display: grid;
+  /* Two columns, one row: the rail runs the full height of the window and the content
+     column carries its own window controls. There is no band above the rail, which is
+     what made it look like a header with a sidebar hung underneath it. */
+  grid-template-columns: var(--rail-w) 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ---- navigation rail ---- */
+
+/* The rail is one continuous column: the brand and the four destinations are one
+   piece with no rule between them, and the panel below carries no fill of its own.
+   A divider under the brand made it read as two stacked panels. */
+.rail {
+  grid-column: 1;
+  grid-row: 1;
+  background: var(--surface);
+  border-right: 1px solid var(--outline);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 8px 12px;
+  gap: 4px;
+}
+
+/* The brand mark is the one place the tile is shown at full size. It used to sit in a
+   rounded plate with an inset outline, which framed the tile inside a frame; the tile's
+   own rounded corners already give it an edge. */
+.rail__brand {
+  width: 38px; height: 38px;
+  display: grid; place-items: center;
+  margin-bottom: 18px;
+}
+.rail__brand svg { width: 38px; height: 38px; }
+/* The mark carries the whole icon now, so each layer names its own colour. These are the
+   raster icon's values, kept in step with tools/genicon.py's TILE / GLYPH. */
+.brand-tile { fill: #1a1d24; }
+.brand-rim { stroke: rgba(255, 255, 255, .16); stroke-width: 1; }
+.brand-f { fill: #eef3fc; }
+.brand-hint { fill: #96b4e8; }
+
+.rail__items { display: flex; flex-direction: column; gap: 3px; width: 100%; }
+
+.rail__item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--on-surface-var);
+  width: 100%;
+  padding: 8px 0 6px;
+  border-radius: var(--radius);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  font: inherit; font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  position: relative;
+  transition: background .14s ease, color .14s ease;
+}
+.rail__item:hover { background: var(--surface-2); color: var(--on-surface); }
+/* Selected state is a filled tonal block -- the Material 3 "active indicator" idea,
+   just not drawn as a left edge. Left edges were how every selected thing in the app
+   was marked (rail, settings categories, toasts), which read as a rule between list
+   items rather than as "this one is on". */
+.rail__item.is-active { background: var(--primary-container); color: var(--on-primary-container); }
+.rail__item.is-active:hover { background: var(--primary-container); }
+.rail__item.is-active .icon { color: var(--on-primary-container); }
+.rail__item .icon { width: 21px; height: 21px; }
+.rail__badge {
+  position: absolute; top: 5px; right: 14px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px;
+  background: var(--err); color: #2a0a08;
+  font-size: 10px; font-weight: 700;
+  display: grid; place-items: center;
+}
+.rail__badge[hidden] { display: none; }
+
+/* ---- main ---- */
+
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+
+/* The window is frameless (see main.go), so this bar is the title bar -- but it carries
+   no title. It used to hold "FFmpeg GUI" plus, sixty pixels lower, a page heading that
+   repeated the rail's own label; both are gone. What earns the row is the drag strip,
+   the window's state chips, and the three buttons.
+
+   --wails-draggable:drag is what Wails watches for; the buttons and the chips inside opt
+   back out with no-drag, otherwise dragging them would move the window. */
+.titlebar {
+  height: 38px;
+  flex: none;
+  display: flex; align-items: stretch;
+  background: var(--surface);
+  /* The rule under the bar is load-bearing now that it has no title in it: without it
+     the empty drag strip and the page's own toolbar -- both --surface -- run together
+     into one undifferentiated block. */
+  border-bottom: 1px solid var(--outline);
+  user-select: none;
+  --wails-draggable: drag;
+}
+/* The status chips lead the bar, hugging the rail's edge: they describe the window's
+   state (running / paused / ffmpeg found), and the eye scans for them from a fixed
+   place. The window buttons stay at the far right where the OS puts them. */
+.titlebar__chips {
+  flex: none;
+  display: flex; align-items: center; gap: 6px;
+  padding-left: 14px;
+  --wails-draggable: no-drag;
+}
+.titlebar__btns { display: flex; align-items: stretch; flex: none; --wails-draggable: no-drag; }
+
+.page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.winbtn {
+  appearance: none; border: 0; background: transparent;
+  width: 46px; display: grid; place-items: center;
+  color: var(--on-surface-var);
+  cursor: default;
+  --wails-draggable: no-drag;
+  transition: background .12s ease, color .12s ease;
+}
+.winbtn:hover { background: var(--surface-3); color: var(--on-surface); }
+.winbtn:active { background: var(--surface-4); }
+.winbtn--close:hover { background: #c42b1c; color: #fff; }
+.winbtn--close:active { background: #a1200f; color: #fff; }
+.winbtn svg { width: 11px; height: 11px; fill: currentColor; }
+
+/* ==========================================================================
+   Primitives
+   ========================================================================== */
+
+.btn {
+  appearance: none;
+  height: var(--ctl-h);
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--surface-3);
+  color: var(--on-surface);
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; white-space: nowrap;
+  transition: background .14s ease, border-color .14s ease, opacity .14s;
+}
+.btn:hover { background: var(--surface-4); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+
+.btn--filled { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+.btn--filled:hover { background: var(--primary-hover); }
+
+.btn--tonal { background: var(--primary-container); color: var(--on-primary-container); }
+.btn--tonal:hover { background: #21539a; }
+
+.btn--outline { background: transparent; border-color: var(--outline-strong); color: var(--on-surface-var); }
+.btn--outline:hover { background: var(--surface-3); color: var(--on-surface); }
+
+.btn--text { background: transparent; color: var(--on-surface-var); padding: 0 9px; }
+.btn--text:hover { background: var(--surface-3); color: var(--on-surface); }
+
+.btn--danger { background: transparent; border-color: #5d2c29; color: var(--err); }
+.btn--danger:hover { background: var(--err-bg); }
+
+.btn--icon { width: var(--ctl-h); padding: 0; justify-content: center; border-radius: 10px; }
+.btn--sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 8px; }
+.btn--sm.btn--icon { width: 28px; }
+
+/* fields */
+
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field > label { font-size: 11.5px; color: var(--on-surface-dim); font-weight: 500; }
+
+.input, .select, .textarea {
+  height: var(--ctl-h);
+  background: var(--surface-2);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-s);
+  color: var(--on-surface);
+  font: inherit; font-size: 12.5px;
+  padding: 0 10px;
+  width: 100%;
+  min-width: 0;
+  outline: none;
+  transition: border-color .14s ease, background .14s ease;
+}
+.textarea { height: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; resize: vertical; line-height: 1.5; }
+.input:focus, .select:focus, .textarea:focus { border-color: var(--primary); background: var(--surface-3); }
+.input::placeholder, .textarea::placeholder { color: #6d717b; }
+.input:disabled, .select:disabled { opacity: .5; }
+
+.select {
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23bdc1cb'><path d='M7 10l5 5 5-5z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-size: 16px;
+  cursor: pointer;
+}
+.select option { background: #1d2027; color: var(--on-surface); }
+
+.input-group { display: flex; gap: 6px; align-items: center; }
+.input-group .input { flex: 1; }
+
+/* checkbox / switch */
+
+.check {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--on-surface-var);
+  cursor: pointer;
+}
+.check input { appearance: none; width: 16px; height: 16px; margin: 0;
+  border: 1.5px solid var(--outline-strong); border-radius: 4px; background: transparent;
+  display: grid; place-items: center; cursor: pointer; transition: all .14s; flex: none; }
+.check input:checked { background: var(--primary); border-color: var(--primary); }
+.check input:checked::after {
+  content: ""; width: 9px; height: 5px;
+  border-left: 2px solid var(--on-primary); border-bottom: 2px solid var(--on-primary);
+  transform: rotate(-45deg) translateY(-1px);
+}
+.check:hover { color: var(--on-surface); }
+
+.switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input { appearance: none; width: 38px; height: 21px; border-radius: 11px;
+  background: var(--surface-4); position: relative; cursor: pointer; margin: 0; flex: none;
+  transition: background .16s; border: none; }
+.switch input::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 15px; height: 15px;
+  border-radius: 50%; background: var(--muted); transition: transform .16s, background .16s;
+}
+.switch input:checked { background: var(--primary-container); }
+.switch input:checked::after { transform: translateX(17px); background: var(--primary); }
+.switch__label { font-size: 12.5px; }
+.switch__hint { font-size: 11px; color: var(--on-surface-dim); }
+
+/* chips */
+
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px; font-weight: 500;
+  background: var(--surface-3); color: var(--on-surface-var);
+  white-space: nowrap;
+}
+.chip .icon { width: 14px; height: 14px; }
+.chip--ok { background: var(--ok-bg); color: var(--ok); }
+.chip--warn { background: var(--warn-bg); color: var(--warn); }
+.chip--err { background: var(--err-bg); color: var(--err); }
+.chip--accent { background: var(--primary-container); color: var(--on-primary-container); }
+.chip--muted { background: var(--muted-bg); color: var(--muted); }
+.chip--click { cursor: pointer; }
+.chip--click:hover { filter: brightness(1.15); }
+
+.badge {
+  font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  padding: 1px 6px; border-radius: 5px;
+  background: var(--surface-4); color: var(--on-surface-dim);
+  text-transform: uppercase;
+}
+
+/* section / card */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+}
+
+.section { border-bottom: 1px solid var(--outline); padding: 14px 16px 16px; }
+.section:last-child { border-bottom: 0; }
+.section__head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.section__head h3 { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--on-surface); }
+.section__head .hint { font-size: 11px; color: var(--on-surface-dim); }
+.section__head .spacer { flex: 1; }
+
+/* The naming-variable reference. It sits inside the section's grid and spans both
+   columns, so it always sits directly under the pattern field it documents. The
+   token column is fixed-width so the descriptions align regardless of token length. */
+.varlist {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  display: grid; grid-template-columns: 96px 1fr;
+  gap: 4px 14px; align-items: baseline;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-s);
+  font-size: 11.5px; color: var(--on-surface-var);
+}
+.varlist .mono { color: var(--primary); font-family: var(--mono); font-size: 11.5px; }
+/* Which other sections consume the same variables -- written here so the table does
+   not have to be repeated under each field that takes a pattern. */
+.varlist__foot {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  font-size: 11px; color: var(--on-surface-dim); line-height: 1.55;
+}
+
+.grid { display: grid; gap: 10px 12px; }
+.grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.span-2 { grid-column: span 2; }
+
+.hint { font-size: 11px; color: var(--on-surface-dim); }
+.mono { font-family: var(--mono); }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row--wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+.sep { width: 1px; height: 20px; background: var(--outline); flex: none; }
+
+/* ==========================================================================
+   Toolbar
+   ========================================================================== */
+
+.toolbar {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--outline);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.toolbar__right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.toolbar .select { width: auto; min-width: 168px; max-width: 260px; }
+
+/* ==========================================================================
+   Table
+   ========================================================================== */
+
+.table-wrap { flex: 1; min-height: 0; overflow: auto; }
+
+table.grid-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+table.grid-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface-2);
+  color: var(--on-surface-dim);
+  font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--outline);
+  white-space: nowrap;
+}
+table.grid-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #21242b;
+  vertical-align: middle;
+  color: var(--on-surface-var);
+}
+table.grid-table tbody tr { transition: background .12s; }
+table.grid-table tbody tr:hover { background: var(--surface-2); }
+table.grid-table tbody tr.is-running { background: #17202e; }
+table.grid-table td.name { color: var(--on-surface); font-weight: 500; max-width: 340px; }
+table.grid-table td.actions { text-align: right; white-space: nowrap; width: 1%; }
+table.grid-table td.num { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+table.grid-table .col-check { width: 34px; text-align: center; padding-left: 12px; }
+
+/* A checked box grows a ::after tick, which shifts the baseline of the inline-flex
+   .check label inside a table header and made the whole header row jump by ~3.4px the
+   moment "select all" was ticked -- every row below it shifted with it. Fixing the
+   label's own height (and giving it a middle vertical-align) keeps the row's height
+   independent of the check state. */
+table.grid-table th .check {
+  height: 18px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.cell-sub { font-size: 11px; color: var(--on-surface-dim); }
+
+/* Before/after inside one measured cell. Two stacked lines read as a transformation;
+   the source is dimmed and struck through so the result below is unmistakably the
+   one that exists on disk now. */
+.cmp { display: inline-flex; flex-direction: column; gap: 0; line-height: 1.35; vertical-align: middle; }
+.cmp__from {
+  font-size: 10.5px; color: var(--on-surface-dim);
+  text-decoration: line-through; text-decoration-color: #5a5f69;
+}
+.cmp__to { display: flex; align-items: baseline; gap: 5px; color: var(--on-surface); }
+.cmp__pct { font-size: 10px; font-weight: 600; }
+.cmp__same { color: var(--on-surface-var); }
+
+/* Two independent row states, styled so they can be told apart at a glance:
+   is-checked is membership in the bulk selection (filled tint, many rows at once);
+   is-selected is the single focused row that drives the detail panel -- an outline,
+   the way a file manager marks the focused item. The outline survives blur on
+   purpose: the detail panel beside the table is still showing that row's log. */
+table.grid-table tbody tr.is-checked { background: #1a2331; }
+table.grid-table tbody tr.is-selected { box-shadow: inset 0 0 0 1px var(--primary); }
+table.grid-table tbody tr.is-selected.is-checked { background: #1d2c3f; }
+table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2px; }
+
+/* The bulk bar appears only while something is checked, so it never reserves space
+   the table is not using. */
+.bulkbar {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--outline);
+  background: var(--surface-2);
+}
+
+/* Queue-level filter: a deliberate override, so it is tinted like an override. */
+.qfilter {
+  flex: none;
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--outline);
+  background: var(--surface-1);
+}
+.qfilter__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.qfilter__head b { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.qfilter__head b svg { color: var(--primary); }
+
+.empty {
+  flex: 1; display: grid; place-items: center; text-align: center;
+  color: var(--on-surface-dim); gap: 10px; padding: 40px 20px;
+}
+.empty .icon { width: 42px; height: 42px; opacity: .35; }
+.empty h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--on-surface-var); }
+.empty p { margin: 0; font-size: 12px; max-width: 420px; }
+
+/* progress */
+
+.progress { height: 4px; border-radius: 2px; background: var(--surface-4); overflow: hidden; min-width: 90px; }
+.progress > i { display: block; height: 100%; background: var(--primary); border-radius: 2px; transition: width .3s ease; }
+.progress.is-done > i { background: var(--ok); }
+.progress.is-warn > i { background: var(--warn); }
+.progress.is-err > i { background: var(--err); }
+
+.progress-cell { display: flex; flex-direction: column; gap: 3px; min-width: 128px; }
+.progress-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--on-surface-dim); font-family: var(--mono); }
+.progress-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-meta > span:last-child { flex: none; }
+
+/* ==========================================================================
+   Bottom panel (log / details / command)
+   ========================================================================== */
+
+.panel {
+  flex: none;
+  border-top: 1px solid var(--outline);
+  background: var(--surface-1);
+  display: flex; flex-direction: column;
+  min-height: 0;
+}
+.panel__grip {
+  height: 6px; cursor: ns-resize; flex: none;
+  background: transparent;
+  position: relative;
+}
+.panel__grip::after {
+  content: ""; position: absolute; left: 50%; top: 2px; transform: translateX(-50%);
+  width: 44px; height: 3px; border-radius: 2px; background: var(--outline-strong);
+}
+.panel__grip:hover::after { background: var(--on-surface-dim); }
+
+.panel__head {
+  flex: none;
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 12px 0;
+  border-bottom: 1px solid var(--outline);
+}
+.tab {
+  appearance: none; border: 0; background: transparent;
+  color: var(--on-surface-dim); font: inherit; font-size: 12px; font-weight: 500;
+  padding: 7px 11px 9px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.tab:hover { color: var(--on-surface); background: var(--surface-2); }
+.tab.is-active { color: var(--primary); border-bottom-color: var(--primary); }
+.tab .icon { width: 15px; height: 15px; }
+
+.panel__body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+.log-view {
+  flex: 1; min-height: 0; overflow: auto;
+  margin: 0; padding: 8px 14px 12px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: #b9c0cb;
+  white-space: pre-wrap; word-break: break-all;
+  user-select: text;
+}
+.log-view .l-warn { color: var(--warn); }
+.log-view .l-err { color: var(--err); }
+.log-view .l-cmd { color: var(--primary); }
+.log-view .l-info { color: var(--on-surface-dim); }
+
+.code-block {
+  flex: 1; min-height: 0;
+  margin: 0; padding: 12px 14px;
+  overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: #cdd4e0; white-space: pre-wrap; word-break: break-all;
+  user-select: text;
+}
+.code-block em { font-style: normal; color: var(--primary); }
+.code-block b { font-weight: 600; color: var(--on-surface); }
+
+/* Multi-line command preview: one flag per line so the reader can scan which
+   arguments are actually being passed instead of untangling a wrapped line. */
+.cmd {
+  padding: 10px 14px;
+  overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+  color: var(--on-surface-var);
+  user-select: text;
+}
+.cmd__line { white-space: pre; }
+.cmd__bin { color: var(--primary); font-weight: 600; }
+.cmd__flag { color: var(--primary); }
+.cmd__val { color: var(--on-surface); }
+
+/* A section that is following the global template. It shows what it inherits so
+   the user can tell "not configured" from "deliberately inheriting X". */
+.follow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: var(--radius);
+  background: var(--surface-2); border: 1px dashed var(--outline-strong);
+  font-size: 11.5px; color: var(--on-surface-dim); line-height: 1.6;
+}
+.follow svg { flex: none; color: var(--primary); }
+
+/* "与全局不同" lives in the section header, next to the title it governs. */
+.inline-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.inline-toggle input { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
+.inline-toggle span { font-size: 11px; color: var(--on-surface-dim); white-space: nowrap; }
+.inline-toggle:hover span { color: var(--on-surface-var); }
+
+.detail-grid { overflow: auto; padding: 12px 16px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.detail-card { background: var(--surface-2); border: 1px solid var(--outline); border-radius: var(--radius); padding: 12px 14px; }
+.detail-card h4 { margin: 0 0 10px; font-size: 11.5px; color: var(--on-surface-dim); font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; font-size: 12px; }
+.kv dt { color: var(--on-surface-dim); }
+.kv dd { margin: 0; color: var(--on-surface); font-family: var(--mono); font-size: 11.5px; word-break: break-all; user-select: text; }
+
+/* ==========================================================================
+   Templates page
+   ========================================================================== */
+
+.split { flex: 1; min-height: 0; display: grid; grid-template-columns: 272px 1fr; }
+
+/* One column, one surface. The head (search + new) and the rows share the same
+   background with only a hairline between them; the previous layout boxed the head
+   separately, which read as "panel above panel". */
+.tpl-list {
+  border-right: 1px solid var(--outline);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface);
+}
+.tpl-list__head {
+  flex: none; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  border-bottom: 1px solid var(--outline);
+}
+/* The three whole-column tools sit left, "new" sits right, on one row. They used to be
+   split across two rows with a "模板" heading, which pushed the search box -- the thing
+   you actually reach for -- to the bottom of the head. */
+.tpl-list__bar { display: flex; align-items: center; gap: 2px; }
+.tpl-list__items { flex: 1; min-height: 0; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.tpl-list__tip {
+  flex: none; padding: 7px 12px; border-top: 1px solid var(--outline);
+  font-size: 10.5px; color: var(--on-surface-dim);
+}
+/* A caption used to sit here ("模板"), labelling everything below the defaults card. It
+   was the third naming of the same thing -- page title, list title, then this -- so the
+   divider is now just a hairline: enough to keep the defaults from looking like just
+   another preset, not enough to be read as a heading. */
+.tpl-list__divider {
+  flex: none;
+  margin: 6px 8px 4px;
+  height: 1px;
+  background: var(--outline);
+}
+
+.tpl-item {
+  text-align: left; appearance: none; border: 1px solid transparent; background: transparent;
+  border-radius: 10px; padding: 8px 10px; cursor: pointer; color: var(--on-surface-var);
+  font: inherit; display: flex; flex-direction: column; gap: 3px;
+  min-width: 0; flex: 1;
+}
+.tpl-item:hover { background: var(--surface-2); }
+.tpl-item__name { font-size: 12.5px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.tpl-item__name svg { flex: none; }
+.tpl-item__label { font-weight: 600; }
+.tpl-item__desc { font-size: 11px; color: var(--on-surface-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A row wraps the button and its drag grip. The button keeps the click target, the
+   grip only appears once the row is hovered -- an always-on handle on every row reads
+   as a column of unexplained icons. */
+.tpl-row { position: relative; display: flex; align-items: stretch; border-radius: 10px; border: 1px solid transparent; }
+.tpl-row:hover { background: var(--surface-2); }
+.tpl-row.is-active { background: var(--surface-3); border-color: var(--outline-strong); }
+.tpl-row.is-active .tpl-item__name { color: var(--on-surface); }
+.tpl-row.is-dragging { opacity: .4; }
+.tpl-row.is-over { border-color: var(--primary); box-shadow: inset 0 2px 0 var(--primary); }
+.tpl-row__grip {
+  flex: none; width: 22px;
+  display: grid; place-items: center;
+  color: var(--on-surface-dim); opacity: 0;
+  cursor: grab;
+}
+.tpl-row:hover .tpl-row__grip { opacity: .7; }
+.tpl-row__grip svg { width: 14px; height: 14px; }
+.tpl-row.is-dragging .tpl-row__grip { cursor: grabbing; }
+
+/* The defaults source leads the list, pinned: no grip, and a marked left edge instead of
+   the drag affordance so it never looks like the others. */
+.tpl-row--global .tpl-item__name { color: var(--primary); }
+.tpl-row--global .tpl-item__desc { color: var(--on-surface-dim); }
+.tpl-row--global.is-active { border-color: var(--primary); }
+.tpl-row--global.is-active .tpl-item__name { color: var(--primary); }
+
+.editor { display: flex; flex-direction: column; min-height: 0; background: var(--surface-1); }
+.editor__body { flex: 1; min-height: 0; overflow: auto; }
+.editor__foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--outline); background: var(--surface-2);
+}
+
+/* Right-click menu. The window has no native menu bar, so row actions need one. */
+.context-menu {
+  position: fixed; z-index: 90; min-width: 158px;
+  background: var(--surface-4); border: 1px solid var(--outline-strong);
+  border-radius: 10px; padding: 5px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .55);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ctxmenu__item {
+  appearance: none; border: 0; background: transparent;
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 7px;
+  color: var(--on-surface); font: inherit; font-size: 12.5px;
+  cursor: pointer; text-align: left; white-space: nowrap;
+}
+.ctxmenu__item:hover { background: var(--primary-container); color: var(--on-primary-container); }
+.ctxmenu__item svg { flex: none; opacity: .85; }
+.ctxmenu__item.is-danger { color: var(--err); }
+.ctxmenu__item.is-danger:hover { background: var(--err-bg); color: var(--err); }
+
+/* ==========================================================================
+   Settings page
+   ========================================================================== */
+
+/* Same one-piece treatment as the templates page: the category list and the panel it
+   switches share one surface with a single hairline between them, not two framed boxes.
+   The active category is a filled block like the rail's -- no left edge anywhere. */
+.settings { flex: 1; min-height: 0; display: grid; grid-template-columns: 184px 1fr; }
+.settings__nav {
+  border-right: 1px solid var(--outline); padding: 12px 10px;
+  display: flex; flex-direction: column; gap: 8px; overflow: auto;
+}
+.settings__group { display: flex; flex-direction: column; gap: 2px; }
+
+/* Three entries in a 184px column: the labels are short, so they can afford to read at
+   body size with a full-size icon. The 12.5px they used was small enough that the
+   column felt empty next to the panel it serves. */
+.snav {
+  appearance: none; border: 0; background: transparent; text-align: left;
+  border-radius: 10px; padding: 9px 12px; cursor: pointer; font: inherit; font-size: 13px;
+  color: var(--on-surface-var); display: flex; align-items: center; gap: 10px;
+}
+.snav .icon { width: 18px; height: 18px; }
+.snav:hover { background: var(--surface-2); color: var(--on-surface); }
+.snav.is-active { background: var(--primary-container); color: var(--on-primary-container); }
+.snav.is-active .icon { color: var(--on-primary-container); }
+
+.settings__body { min-height: 0; overflow: auto; }
+.settings__foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--outline); background: var(--surface-2);
+}
+
+/* ==========================================================================
+   Modal / drawer / toast
+   ========================================================================== */
+
+.modal-root { position: fixed; inset: 0; z-index: 60; display: none; }
+.modal-root.is-open { display: block; }
+
+.scrim { position: absolute; inset: 0; background: rgba(6, 8, 12, .62); backdrop-filter: blur(2px); }
+
+.modal {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: var(--surface-1);
+  border: 1px solid var(--outline-strong);
+  border-radius: var(--radius-l);
+  display: flex; flex-direction: column;
+  width: min(940px, 92vw); max-height: 86vh;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  overflow: hidden;
+}
+.modal--wide { width: min(1180px, 95vw); height: 86vh; }
+.modal--narrow { width: min(560px, 92vw); }
+
+.modal__head { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--outline); }
+.modal__head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.modal__body { flex: 1; min-height: 0; overflow: auto; }
+.modal__foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--outline); background: var(--surface-2); }
+
+/* Top-right, under the window buttons. The stack grows downwards so the newest
+   message is the one closest to the corner the eye returns to. */
+.toasts {
+  position: fixed; right: 14px; top: 46px; z-index: 80;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+}
+.toast {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--surface-4); color: var(--on-surface);
+  border: 1px solid var(--outline-strong);
+  padding: 9px 14px; border-radius: 10px; font-size: 12.5px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .45);
+  max-width: 420px;
+  cursor: pointer;
+  animation: toast-in .18s ease;
+}
+/* The kind lives in the leading icon's colour, not in a left edge -- the app used to
+   mark selected things with left bars everywhere, toasts included, and a three-pixel
+   stripe next to a rounded card read as a rendering artifact rather than a signal. */
+.toast .icon { flex: none; color: var(--primary); }
+.toast:hover { border-color: var(--primary); }
+.toast.ok .icon { color: var(--ok); }
+.toast.err .icon { color: var(--err); }
+.toast.warn .icon { color: var(--warn); }
+@keyframes toast-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+
+/* misc */
+
+.drop-overlay { position: fixed; inset: 0; z-index: 70; display: none; place-items: center; background: rgba(10, 20, 40, .55); backdrop-filter: blur(2px); }
+.drop-overlay.is-on { display: grid; }
+.drop-overlay__box { border: 2px dashed var(--primary); border-radius: var(--radius-l); padding: 26px 40px; background: var(--surface-2); display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--primary); font-weight: 600; }
+
+.switch-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #22262d;
+}
+.switch-row:last-child { border-bottom: 0; }
+.switch-row__text { flex: 1; min-width: 0; }
+.switch-row__text b { display: block; font-size: 12.5px; font-weight: 500; color: var(--on-surface); }
+.switch-row__text span { font-size: 11px; color: var(--on-surface-dim); }
+
+.compare { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; }
+.compare__arrow { color: var(--on-surface-dim); display: grid; place-items: center; }
+
+.delta-up { color: var(--err); }
+.delta-down { color: var(--ok); }
+
+.tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--surface-3); border-radius: 7px; padding: 3px 8px;
+  font-size: 12px; color: var(--on-surface-var);
+}
+.tag button { appearance: none; border: 0; background: transparent; color: var(--on-surface-dim); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.tag button:hover { color: var(--err); }
+.tag .icon { width: 13px; height: 13px; }
+
+.arg-table { font-size: 12px; }
+.arg-table td { padding: 3px 4px; }
+.arg-table .input { height: 29px; font-size: 12px; }
+.arg-table td:last-child { width: 28px; }
+
+.scroll-y { overflow-y: auto; min-height: 0; }

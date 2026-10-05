@@ -1,0 +1,318 @@
+package store
+
+import "time"
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+
+// Resize modes.
+const (
+	ResizeKeep      = "keep"      // 保持原始分辨率
+	ResizeLongEdge  = "longedge"  // 长边固定，短边按比例（自动识别横竖屏）
+	ResizeShortEdge = "shortedge" // 短边固定，长边按比例
+	ResizeExact     = "exact"     // 指定宽 x 高
+	ResizeFit       = "fit"       // 限制在矩形范围内，只缩不放
+	ResizePercent   = "percent"   // 按百分比缩放
+)
+
+// Scale algorithms understood by ffmpeg's scale filter.
+const (
+	ScaleLanczos  = "lanczos"
+	ScaleBicubic  = "bicubic"
+	ScaleBilinear = "bilinear"
+	ScaleNeighbor = "neighbor"
+	ScaleBicubicF = "bicubic"
+)
+
+// ResizeSpec describes the target geometry for a template.
+type ResizeSpec struct {
+	Mode        string  `json:"mode"`
+	LongEdge    int     `json:"longEdge"`
+	ShortEdge   int     `json:"shortEdge"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	MaxWidth    int     `json:"maxWidth"`
+	MaxHeight   int     `json:"maxHeight"`
+	Percent     float64 `json:"percent"`
+	OnlyLarger  bool    `json:"onlyLarger"` // 只缩小不放大
+	MultipleOf  int     `json:"multipleOf"` // 宽高对齐倍数
+	Algorithm   string  `json:"algorithm"`
+	PadToTarget bool    `json:"padToTarget"`
+	PadColor    string  `json:"padColor"`
+}
+
+// Enabled reports whether the spec actually changes anything.
+func (r ResizeSpec) Enabled() bool {
+	switch r.Mode {
+	case "", ResizeKeep:
+		return false
+	case ResizeLongEdge:
+		return r.LongEdge > 0
+	case ResizeShortEdge:
+		return r.ShortEdge > 0
+	case ResizeExact:
+		return r.Width > 0 || r.Height > 0
+	case ResizeFit:
+		return r.MaxWidth > 0 || r.MaxHeight > 0
+	case ResizePercent:
+		return r.Percent > 0 && r.Percent != 100
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Extra arguments
+// ---------------------------------------------------------------------------
+
+// ArgSpec is one custom ffmpeg argument pair shown in the template editor.
+type ArgSpec struct {
+	Flag    string `json:"flag"`
+	Value   string `json:"value"`
+	Comment string `json:"comment"`
+	Enabled bool   `json:"enabled"`
+}
+
+// ---------------------------------------------------------------------------
+// Template
+// ---------------------------------------------------------------------------
+
+// Video / audio / container handling modes.
+const (
+	ModeCopy    = "copy"    // 直接复制流
+	ModeEncode  = "encode"  // 重新编码
+	ModeDisable = "disable" // 丢弃该类型的流
+)
+
+// Rate control modes.
+const (
+	RateCRF     = "crf"
+	RateBitrate = "bitrate"
+	RateQP      = "qp"
+)
+
+// Template is a reusable, switchable set of ffmpeg parameters.
+type Template struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Builtin     bool   `json:"builtin"`
+	// Global marks the one template that holds the defaults every other template
+	// inherits. It is pinned at the top of the list and cannot be deleted or
+	// duplicated.
+	Global    bool  `json:"global,omitempty"`
+	UpdatedAt int64 `json:"updatedAt"`
+
+	// 容器
+	Container string `json:"container"`
+
+	// 视频
+	VideoMode    string `json:"videoMode"`
+	VideoCodec   string `json:"videoCodec"`
+	RateControl  string `json:"rateControl"`
+	CRF          int    `json:"crf"`
+	VideoBitrate string `json:"videoBitrate"`
+	MaxRate      string `json:"maxRate"`
+	BufSize      string `json:"bufSize"`
+	Preset       string `json:"preset"`
+	Tune         string `json:"tune"`
+	Profile      string `json:"profile"`
+	Level        string `json:"level"`
+	PixFmt       string `json:"pixFmt"`
+
+	Resize ResizeSpec `json:"resize"`
+	FPS    string     `json:"fps"`
+
+	// 音频
+	AudioMode     string `json:"audioMode"`
+	AudioCodec    string `json:"audioCodec"`
+	AudioBitrate  string `json:"audioBitrate"`
+	AudioChannels int    `json:"audioChannels"`
+	SampleRate    int    `json:"sampleRate"`
+
+	// 输出与命名。留空的字段跟随「全局模板」里的同一项；但只要
+	// OutputOverride 为 false，整段都跟随全局，模板自己写的值会被忽略
+	//（对应界面上的「与全局不同」开关）。
+	OutMode     string `json:"outMode"`     // "" | same | sibling | custom | mirror
+	OutDir      string `json:"outDir"`      // custom / mirror 使用的目录
+	OutSuffix   string `json:"outSuffix"`   // sibling 使用的后缀，如 _out
+	OutPattern  string `json:"outPattern"`  // 命名模板，如 {name}
+	OutConflict string `json:"outConflict"` // "" | overwrite | skip | rename
+	// OutputOverride 记录这一段是不是被模板显式接管。关掉时整段跟随全局模板。
+	// 之所以用布尔量而不是指针，是因为输出段里没有「0 有意义」的字段——
+	// 每个字段为空就表示未设置，逐字段回落已经足够。
+	OutputOverride bool `json:"outputOverride,omitempty"`
+
+	// 以下三段整段跟随全局：指针为 nil 即表示"这一段用全局模板的值"。
+	// 之所以用整段指针而不是逐字段留空，是因为 0 在这些字段里本身就有意义
+	//（例如"不限制体积"和"跟随全局"必须能区分开）。
+	Perf     *PerfSpec    `json:"perf,omitempty"`
+	Filter   *FilterSpec  `json:"filter,omitempty"`
+	Problems *ProblemSpec `json:"problems,omitempty"`
+
+	// 容器与元数据
+	MapAll        bool `json:"mapAll"`
+	FastStart     bool `json:"fastStart"`
+	StripMetadata bool `json:"stripMetadata"`
+	StripChapters bool `json:"stripChapters"`
+	// MaxMuxQueue maps to -max_muxing_queue_size. 0 means "leave it to ffmpeg"
+	// and the flag is omitted; it is only worth setting for inputs that burst
+	// packets, which would otherwise abort the muxer.
+	MaxMuxQueue int `json:"maxMuxQueue"`
+
+	// 附加
+	FilterMode   string    `json:"filterMode"` // "vf" 简单滤镜链 | "complex" 完整滤镜图
+	VideoFilters string    `json:"videoFilters"`
+	AudioFilters string    `json:"audioFilters"`
+	InputArgs    []ArgSpec `json:"inputArgs"`
+	OutputArgs   []ArgSpec `json:"outputArgs"`
+}
+
+// IsRemux reports whether the template only rewraps the streams.
+func (t Template) IsRemux() bool {
+	return t.VideoMode == ModeCopy && (t.AudioMode == ModeCopy || t.AudioMode == ModeDisable) && !t.Resize.Enabled()
+}
+
+// OverridesOutput reports whether this template carries its own output rules
+// instead of inheriting them from the global template. The switch state is the
+// authority: a follower that still has stale values written into it is ignored.
+func (t Template) OverridesOutput() bool {
+	if !t.OutputOverride {
+		return false
+	}
+	return t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" ||
+		t.OutPattern != "" || t.OutConflict != ""
+}
+
+// Normalize fills safe defaults for enum-ish fields.
+func (t *Template) Normalize() {
+	if t.ID == "" {
+		t.ID = NewID()
+	}
+	switch t.VideoMode {
+	case ModeCopy, ModeEncode, ModeDisable:
+	default:
+		t.VideoMode = ModeEncode
+	}
+	switch t.AudioMode {
+	case ModeCopy, ModeEncode, ModeDisable:
+	default:
+		t.AudioMode = ModeEncode
+	}
+	switch t.RateControl {
+	case RateCRF, RateBitrate, RateQP:
+	default:
+		t.RateControl = RateCRF
+	}
+	switch t.Resize.Mode {
+	case "", ResizeKeep, ResizeLongEdge, ResizeShortEdge, ResizeExact, ResizeFit, ResizePercent:
+	default:
+		t.Resize.Mode = ResizeKeep
+	}
+	if t.Resize.MultipleOf <= 0 {
+		t.Resize.MultipleOf = 2
+	}
+	if t.Resize.Algorithm == "" {
+		t.Resize.Algorithm = ScaleLanczos
+	}
+	if t.Resize.PadColor == "" {
+		t.Resize.PadColor = "black"
+	}
+	switch t.FilterMode {
+	case "", "vf", "complex":
+	default:
+		t.FilterMode = "vf"
+	}
+	switch t.OutMode {
+	case "", OutputSame, OutputSibling, OutputCustom, OutputMirror:
+	default:
+		t.OutMode = ""
+	}
+	switch t.OutConflict {
+	case "", ConflictOverwrite, ConflictSkip, ConflictRename:
+	default:
+		t.OutConflict = ""
+	}
+	// Files written before the output section got a switch carry their values but
+	// not the flag. Treating "has a value but no flag" as "switched on" keeps
+	// those templates behaving the way they did, instead of silently dropping
+	// their output rules back to the global ones.
+	if !t.OutputOverride && !t.Global {
+		t.OutputOverride = t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" ||
+			t.OutPattern != "" || t.OutConflict != ""
+	}
+	// The three inheritable sections are only normalised when present; a nil
+	// section is the "follow the global template" state and must stay nil.
+	if t.Perf != nil {
+		t.Perf.Normalize()
+	}
+	if t.Filter != nil {
+		switch t.Filter.Action {
+		case "", ActionKeep, ActionMove, ActionCopy:
+		default:
+			t.Filter.Action = ""
+		}
+		t.Filter.IncludeExts = normalizeExts(t.Filter.IncludeExts)
+		t.Filter.ExcludeExts = normalizeExts(t.Filter.ExcludeExts)
+	}
+	if t.Problems != nil {
+		switch t.Problems.ErrorAction {
+		case "", ActionKeep, ActionMove, ActionCopy:
+		default:
+			t.Problems.ErrorAction = ""
+		}
+		switch t.Problems.WarningAction {
+		case "", ActionKeep, ActionMove, ActionCopy, ActionMark:
+		default:
+			t.Problems.WarningAction = ""
+		}
+	}
+	// CRF stays 0 when unset, and 0 means "let ffmpeg decide" -- the flag is then
+	// omitted entirely. Defaulting it to 23 here would put a -crf into the command
+	// of every template that never asked for one, and would also mislabel the
+	// quality for non-lib* encoders (NVENC, QSV and AMF do not read -crf at all).
+	if t.CRF < 0 {
+		t.CRF = 0
+	}
+	if t.CRF > 51 {
+		t.CRF = 51
+	}
+	t.UpdatedAt = time.Now().Unix()
+}
+
+// TemplatesPath is the template file location.
+func TemplatesPath() string { return Path("templates.json") }
+
+// LoadTemplates reads templates.json, seeding the built-in set on first run.
+//
+// It also guarantees a global template is present and pinned first. When the file
+// predates that concept, migrate is used to carry the old global settings over so
+// an existing configuration is not silently lost.
+func LoadTemplates(migrate func() (Template, bool)) []Template {
+	var list []Template
+	ok, err := ReadJSON(TemplatesPath(), &list)
+	if !ok || err != nil || len(list) == 0 {
+		list = BuiltinTemplates()
+	}
+	for i := range list {
+		list[i].Normalize()
+	}
+
+	var fn func() Template
+	if migrate != nil {
+		fn = func() Template {
+			t, _ := migrate()
+			return t
+		}
+	}
+	list, changed := EnsureGlobal(list, fn)
+	if !ok || err != nil || changed {
+		_ = SaveTemplates(list)
+	}
+	return list
+}
+
+// SaveTemplates writes templates.json.
+func SaveTemplates(list []Template) error {
+	return WriteJSON(TemplatesPath(), list)
+}

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>driver</title>
+<style>html,body{margin:0;background:#0f1116;color:#e6e8ee;font:13px/1.6 Consolas,monospace}iframe{border:0;display:block;width:100vw}pre{padding:16px;white-space:pre-wrap}</style>
+</head>
+<body>
+<iframe id="f"></iframe>
+<script>
+const p = new URLSearchParams(location.search);
+const H = Number(p.get('h') || window.innerHeight);
+const f = document.getElementById('f');
+f.style.height = H + 'px';
+
+// Register before assigning src: the load event is async today, but a listener
+// attached after src assignment is the classic way to get a silently dead driver.
+f.addEventListener('load', function () {
+  const d = this.contentDocument;
+  // Accept both p= and page= for the page name: p collides visually with the
+  // URLSearchParams variable below and is easy to mistype.
+  const page = p.get('page') || p.get('p');
+  const cat = p.get('cat');
+  const modal = p.get('modal');
+
+  function click(sel) {
+    const el = d.querySelector(sel);
+    if (el) { el.click(); return true; }
+    // Report the miss into the driver document: a silent miss produces a
+    // screenshot of the wrong page, which is worse than a visible error.
+    const log = document.getElementById('drivelog') || (function () {
+      const pre = document.createElement('pre');
+      pre.id = 'drivelog';
+      document.body.appendChild(pre);
+      return pre;
+    })();
+    log.textContent += 'MISS ' + sel + '\n';
+    return false;
+  }
+
+  // probe=1: report what the driver can actually see, instead of a screenshot of
+  // the app. Use this to prove the selectors match before trusting any capture.
+  // It runs at the END of the same navigation chain, not instead of it: probing the
+  // task page when the URL asked for the template page proves nothing about it.
+  function probe() {
+    const probeSels = [
+      '.rail__item[data-page="settings"]',
+      '.rail__item[data-page="templates"]',
+      '.titlebar__btns',
+      '.winbtn[data-win="close"]',
+      '.snav[data-cat="binary"]',
+      '.snav[data-cat="system"]',
+      '.snav[data-cat="logs"]',
+      // The global template is the list's first row now, not a card above it.
+      '.tpl-row--global',
+      '.tpl-row',
+      '.tpl-row__grip',
+      '[data-sec="perf"]',
+      '[data-sec="output"]',
+      '[data-sec="filter"]',
+      '[data-sec="problems"]',
+      '.follow',
+      'input[name="outSuffix"]',
+      'input[name="pConcurrency"]',
+      'input[name="logMaxSizeMB"]',
+      'input[name="logKeepDays"]',
+      '[data-act="preview"]',
+    ];
+    const lines = probeSels.map(function (s) {
+      return String(d.querySelectorAll(s).length).padStart(3) + '  ' + s;
+    });
+    // The app no longer prints a page title anywhere -- the rail's active item is the
+    // only place the page is named -- so that label is what identifies where we landed.
+    var active = d.querySelector('.rail__item.is-active');
+    var label = active ? (active.textContent || '').trim() : '?';
+    d.body.innerHTML = '<pre>url: ' + location.search + '\n' +
+      'landed on: page=' + (active ? active.dataset.page : '?')
+      + ' label=' + label + '\n' +
+      'mock active: ' + (typeof d.defaultView.go === 'undefined' ? 'yes (no window.go)' : 'no, real bindings') + '\n\n' +
+      'matches in the app document:\n' + lines.join('\n') + '</pre>';
+  }
+
+  setTimeout(() => {
+    if (page && page !== 'tasks') click('.rail__item[data-page="' + page + '"]');
+    setTimeout(() => {
+      if (cat) click('.snav[data-cat="' + cat + '"]');
+      setTimeout(() => {
+        // tpl=<id> selects a specific template (tpl=global for the defaults one),
+        // tplIndex=<n> picks by position, and scroll=<sel> reveals a section.
+        const want = p.get('tpl');
+        if (want === 'global') click('.tpl-row--global .tpl-item');
+        else if (want) click('.tpl-row[data-id="' + want + '"] .tpl-item');
+        const idx = p.get('tplIndex');
+        if (idx != null) {
+          const items = d.querySelectorAll('.tpl-row .tpl-item');
+          if (items[Number(idx)]) items[Number(idx)].click();
+        }
+        // sec=<name> turns one "与全局不同" switch on, so the expanded editor can be
+        // captured without hand-editing the draft first.
+        const sec = p.get('sec');
+        if (sec) {
+          const sw = d.querySelector('[data-sec="' + sec + '"]');
+          if (sw && !sw.checked) { sw.checked = true; sw.dispatchEvent(new Event('change', { bubbles: true })); }
+        }
+        if (p.get('scroll')) {
+          const s = d.querySelector(p.get('scroll'));
+          if (s) s.scrollTop = Number(p.get('to') || 1200);
+        }
+        setTimeout(() => {
+          if (modal === 'cmd') click('[data-act="preview-command"]');
+          if (modal === 'detail') click('.tab[data-tab="running"]');
+          if (modal === 'command') click('.tab[data-tab="command"]');
+          if (modal === 'tplpreview') click('[data-act="preview"]');
+          if (modal === 'histdetail') {
+            const b = d.querySelector('tbody tr [data-act="detail"]');
+            if (b) b.click();
+          }
+          if (p.get('scroll')) {
+            const s = d.querySelector(p.get('scroll'));
+            if (s) s.scrollTop = Number(p.get('to') || 1200);
+          }
+          if (p.get('probe')) { probe(); return; }
+          // Record where we actually ended up. Without this a selector that
+          // silently misses still yields a screenshot -- of the wrong page.
+          var active = d.querySelector('.rail__item.is-active');
+          var log = document.getElementById('drivelog') || (function () {
+            const pre = document.createElement('pre');
+            pre.id = 'drivelog';
+            pre.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9;font-size:10px;color:#0f0;background:#000';
+            document.body.appendChild(pre);
+            return pre;
+          })();
+          log.textContent = 'page=' + (active ? active.dataset.page : '?')
+            + ' label=' + (active ? (active.textContent || '').trim() : '?');
+        }, 600);
+      }, 900);
+    }, 900);
+  }, 1000);
+});
+
+// Same-origin is what matters, not the path: serve the project root and point the
+// iframe at /frontend/dist/index.html so tools/ and frontend/dist/ share an origin.
+f.src = p.get('src') || '/frontend/dist/index.html';
+</script>
+</body>
+</html>

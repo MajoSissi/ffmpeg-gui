@@ -1,0 +1,194 @@
+package store
+
+import "time"
+
+func bt(t Template) Template {
+	t.Builtin = true
+	t.Normalize()
+	return t
+}
+
+// BuiltinTemplates returns the shipped starter templates.
+//
+// None of them set Perf / Filter / Problems on purpose: those three sections
+// stay nil, which is exactly the "follow the global template" state. A user who
+// wants a preset to behave differently from the default can switch the section
+// on in the editor without the shipped list second-guessing them.
+func BuiltinTemplates() []Template {
+	now := time.Now().Unix()
+	list := []Template{
+		bt(Template{
+			Name:        "无损转封装",
+			Description: "仅重封装，不重编码。秒级完成，画质完全无损。",
+			Container:   "",
+			VideoMode:   ModeCopy,
+			AudioMode:   ModeCopy,
+			MapAll:      true,
+		}),
+		bt(Template{
+			Name:        "H.264 通用 1080p",
+			Description: "兼容性最好。长边压到 1080p，CRF 23 视觉无损。",
+			Container:   "mp4",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "libx264",
+			RateControl: RateCRF,
+			CRF:         23,
+			Preset:      "medium",
+			PixFmt:      "yuv420p",
+			Resize: ResizeSpec{
+				Mode: ResizeLongEdge, LongEdge: 1920, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			AudioMode:     ModeEncode,
+			AudioCodec:    "aac",
+			AudioBitrate:  "192k",
+			AudioChannels: 2,
+			FastStart:     true,
+		}),
+		bt(Template{
+			Name:        "H.265 高压缩",
+			Description: "同画质体积更小。长边压到 1080p，CRF 26。",
+			Container:   "mp4",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "libx265",
+			RateControl: RateCRF,
+			CRF:         26,
+			Preset:      "medium",
+			PixFmt:      "yuv420p",
+			Resize: ResizeSpec{
+				Mode: ResizeLongEdge, LongEdge: 1920, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			AudioMode:     ModeEncode,
+			AudioCodec:    "aac",
+			AudioBitrate:  "128k",
+			AudioChannels: 2,
+			FastStart:     true,
+		}),
+		bt(Template{
+			Name:        "4K 长边转 2K",
+			Description: "自动识别横竖屏：长边统一到 2560，短边按比例。原片不足 2K 的不放大。",
+			Container:   "mp4",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "libx265",
+			RateControl: RateCRF,
+			CRF:         24,
+			Preset:      "medium",
+			PixFmt:      "yuv420p",
+			Resize: ResizeSpec{
+				Mode: ResizeLongEdge, LongEdge: 2560, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			AudioMode:     ModeEncode,
+			AudioCodec:    "aac",
+			AudioBitrate:  "192k",
+			AudioChannels: 2,
+			FastStart:     true,
+		}),
+		bt(Template{
+			Name:        "竖屏短视频 1080x1920",
+			Description: "短边锁定 1080，长边按比例，适合竖屏素材。",
+			Container:   "mp4",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "libx264",
+			RateControl: RateCRF,
+			CRF:         24,
+			Preset:      "fast",
+			PixFmt:      "yuv420p",
+			Resize: ResizeSpec{
+				Mode: ResizeShortEdge, ShortEdge: 1080, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			AudioMode:     ModeEncode,
+			AudioCodec:    "aac",
+			AudioBitrate:  "128k",
+			AudioChannels: 2,
+			FastStart:     true,
+		}),
+		bt(Template{
+			Name:         "定码率压缩",
+			Description:  "按目标视频码率压缩，配合 maxrate 控制峰值，适合网络分发。",
+			Container:    "mp4",
+			VideoMode:    ModeEncode,
+			VideoCodec:   "libx264",
+			RateControl:  RateBitrate,
+			VideoBitrate: "4000k",
+			MaxRate:      "5000k",
+			BufSize:      "8000k",
+			Preset:       "medium",
+			PixFmt:       "yuv420p",
+			AudioMode:    ModeEncode,
+			AudioCodec:   "aac",
+			AudioBitrate: "160k",
+			FastStart:    true,
+		}),
+		bt(Template{
+			Name:         "仅提取音频 (M4A)",
+			Description:  "丢弃视频流，音频转 AAC 并输出 .m4a。",
+			Container:    "m4a",
+			VideoMode:    ModeDisable,
+			AudioMode:    ModeEncode,
+			AudioCodec:   "aac",
+			AudioBitrate: "192k",
+		}),
+		bt(Template{
+			Name:         "仅提取音频 (MP3)",
+			Description:  "丢弃视频流，音频转 MP3 192k。",
+			Container:    "mp3",
+			VideoMode:    ModeDisable,
+			AudioMode:    ModeEncode,
+			AudioCodec:   "libmp3lame",
+			AudioBitrate: "192k",
+			SampleRate:   44100,
+		}),
+		bt(Template{
+			Name:        "Web 优化 MP4",
+			Description: "H.264 + AAC + faststart，浏览器可直接流式播放。",
+			Container:   "mp4",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "libx264",
+			RateControl: RateCRF,
+			CRF:         25,
+			Preset:      "fast",
+			Profile:     "high",
+			Level:       "4.1",
+			PixFmt:      "yuv420p",
+			Resize: ResizeSpec{
+				Mode: ResizeLongEdge, LongEdge: 1920, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			AudioMode:     ModeEncode,
+			AudioCodec:    "aac",
+			AudioBitrate:  "128k",
+			AudioChannels: 2,
+			FastStart:     true,
+			StripMetadata: true,
+		}),
+		bt(Template{
+			Name:        "转 GIF",
+			Description: "12 fps、宽 640 的 GIF 动图。",
+			Container:   "gif",
+			VideoMode:   ModeEncode,
+			VideoCodec:  "gif",
+			Resize: ResizeSpec{
+				Mode: ResizeFit, MaxWidth: 640, OnlyLarger: true,
+				MultipleOf: 2, Algorithm: ScaleLanczos,
+			},
+			FPS:          "12",
+			AudioMode:    ModeDisable,
+			FilterMode:   "vf",
+			VideoFilters: "split[a][b];[a]palettegen[p];[b][p]paletteuse",
+		}),
+		bt(Template{
+			Name:        "空模板（自定义）",
+			Description: "从零开始，所有参数由你决定。",
+			Container:   "",
+			VideoMode:   ModeCopy,
+			AudioMode:   ModeCopy,
+		}),
+	}
+	for i := range list {
+		list[i].UpdatedAt = now
+	}
+	return list
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "FFmpegGUI",
+  "outputfilename": "FFmpegGUI",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "",
+    "email": ""
+  },
+  "info": {
+    "companyName": "",
+    "productName": "FFmpeg GUI",
+    "productVersion": "1.0.0",
+    "copyright": "",
+    "comments": "基于 ffmpeg / ffprobe 的批量媒体处理工具"
+  }
+}
