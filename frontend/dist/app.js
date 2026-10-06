@@ -316,10 +316,21 @@ if (globalThis.runtime?.OnFileDrop) {
   // useDropTarget = false so a drop anywhere in the window is accepted.
   globalThis.runtime.OnFileDrop(async (x, y, paths) => {
     if (!paths?.length) return;
-    const res = await api.addDroppedFiles(paths);
-    if (res?.added) {
-      if (state.page !== 'tasks') go('tasks');
-      else views.tasks.mount();
+    try {
+      const res = await api.addDroppedFiles(paths);
+      if (res?.added) {
+        // Adding only broadcasts the counters, never the rows, so the list is
+        // pulled here: otherwise the badge goes up and the table stays empty.
+        state.jobs = await api.jobs();
+        if (state.page !== 'tasks') go('tasks');
+        else views.tasks.onJobsChanged();
+      }
+    } catch (err) {
+      // A drop that throws here used to vanish without a word: the callback is
+      // async, so nothing ever surfaced the rejection and the files simply
+      // seemed to be ignored.
+      console.error(err);
+      toast('拖入的文件未能加入队列: ' + err, 'error', 6000);
     }
   }, false);
 }

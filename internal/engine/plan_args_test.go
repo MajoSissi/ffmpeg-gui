@@ -17,6 +17,9 @@ import (
 // still reach the command line.
 
 func baseInfo() *media.Info {
+	// Video/Audio are set because HasVideo() keys off the stream, not off the
+	// dimensions: without them a real ffprobe result and this fixture would
+	// disagree about whether there is anything to scale.
 	return &media.Info{
 		Path: "D:/in/a.mp4", FileName: "a.mp4", Ext: "mp4",
 		Duration: 60, Size: 1 << 20,
@@ -24,6 +27,8 @@ func baseInfo() *media.Info {
 		FPS: 30, PixFmt: "yuv420p",
 		VideoCodec: "h264", AudioCodec: "aac",
 		VideoN: 1, AudioN: 1,
+		Video: &media.Stream{Index: 0, Type: "video", Codec: "h264", Width: 3840, Height: 2160, FPS: 30, PixFmt: "yuv420p"},
+		Audio: &media.Stream{Index: 1, Type: "audio", Codec: "aac", SampleRate: 48000, Channels: 2},
 	}
 }
 
@@ -256,5 +261,98 @@ func TestThreadsEmittedWhenSet(t *testing.T) {
 	// It belongs to the output, so it has to sit after the input.
 	if i := slices.Index(plan.Args, "-i"); i < 0 || slices.Index(plan.Args, "-threads") < i {
 		t.Errorf("-threads must come after -i\nargs: %v", plan.Args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scaling: only the axis the template pins is written out
+// ---------------------------------------------------------------------------
+
+func portraitInfo() *media.Info {
+	info := baseInfo()
+	info.Width, info.Height = 2160, 3840
+	info.DisplayWidth, info.DisplayHeight = 2160, 3840
+	return info
+}
+
+// scaleFilter returns the -vf value a resize spec produces, failing when the
+// plan carries no filter at all.
+func scaleFilter(t *testing.T, info *media.Info, r store.ResizeSpec) string {
+	t.Helper()
+	tpl := store.Template{
+		VideoMode: store.ModeEncode, VideoCodec: "libx264", AudioMode: store.ModeCopy, Resize: r,
+	}
+	tpl.Normalize()
+	plan, err := BuildPlan(PlanInput{
+		Info:     info,
+		Tpl:      tpl,
+		Output:   "D:/out/a.mp4",
+		Binaries: media.Binaries{FFmpeg: "ffmpeg"},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	ok, v := hasFlag(plan.Args, "-vf")
+	if !ok {
+		t.Fatalf("no -vf in args: %v", plan.Args)
+	}
+	return v
+}
+
+func TestLongEdgePinsOnlyOneAxis(t *testing.T) {
+	// 3840x2160 with a 2560 long edge: the width is the long edge, so only it is
+	// written out. ffmpeg works the height out, and -2 keeps it even.
+	r := store.ResizeSpec{Mode: store.ResizeLongEdge, LongEdge: 2560, MultipleOf: 2, Algorithm: store.ScaleLanczos}
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=2560:-2:flags=lanczos" {
+		t.Errorf("landscape long edge = %q, want scale=2560:-2:flags=lanczos", got)
+	}
+	// The same template on a portrait clip pins the height instead.
+	if got := scaleFilter(t, portraitInfo(), r); got != "scale=-2:2560:flags=lanczos" {
+		t.Errorf("portrait long edge = %q, want scale=-2:2560:flags=lanczos", got)
+	}
+}
+
+func TestShortEdgePinsOnlyOneAxis(t *testing.T) {
+	r := store.ResizeSpec{Mode: store.ResizeShortEdge, ShortEdge: 1080, MultipleOf: 2, Algorithm: store.ScaleLanczos}
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=-2:1080:flags=lanczos" {
+		t.Errorf("landscape short edge = %q, want scale=-2:1080:flags=lanczos", got)
+	}
+	if got := scaleFilter(t, portraitInfo(), r); got != "scale=1080:-2:flags=lanczos" {
+		t.Errorf("portrait short edge = %q, want scale=1080:-2:flags=lanczos", got)
+	}
+}
+
+// The auto side is -1 with no alignment and -n with one, which is what makes the
+// "对齐倍数" box keep working now that ffmpeg does the arithmetic.
+func TestAutoDimFollowsMultipleOf(t *testing.T) {
+	r := store.ResizeSpec{Mode: store.ResizeLongEdge, LongEdge: 2560, MultipleOf: 1, Algorithm: store.ScaleLanczos}
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=2560:-1:flags=lanczos" {
+		t.Errorf("multipleOf 1 = %q, want scale=2560:-1:flags=lanczos", got)
+	}
+	r.MultipleOf = 8
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=2560:-8:flags=lanczos" {
+		t.Errorf("multipleOf 8 = %q, want scale=2560:-8:flags=lanczos", got)
+	}
+}
+
+// An unset algorithm must not smuggle a :flags= into the command: writing
+// flags=bicubic would claim a choice the user never made.
+func TestScaleAlgorithmOmittedWhenUnset(t *testing.T) {
+	r := store.ResizeSpec{Mode: store.ResizeLongEdge, LongEdge: 2560, MultipleOf: 2}
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=2560:-2" {
+		t.Errorf("unset algorithm = %q, want scale=2560:-2 with no :flags=", got)
+	}
+}
+
+// An exact size with one axis left at 0 keeps the auto side too; pad needs both,
+// so it is the one case that still writes two numbers.
+func TestExactResizeKeepsBothAxes(t *testing.T) {
+	r := store.ResizeSpec{Mode: store.ResizeExact, Width: 1280, MultipleOf: 2, Algorithm: store.ScaleLanczos}
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=1280:-2:flags=lanczos" {
+		t.Errorf("exact width only = %q, want scale=1280:-2:flags=lanczos", got)
+	}
+	r.Height = 720
+	if got := scaleFilter(t, baseInfo(), r); got != "scale=1280:720:flags=lanczos" {
+		t.Errorf("exact both = %q, want scale=1280:720:flags=lanczos", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ffmpeggui/internal/media"
+	"ffmpeggui/internal/sysx"
 )
 
 // Status is the lifecycle state of a job.
@@ -73,11 +74,22 @@ type Job struct {
 	SourceRoot   string `json:"sourceRoot"`
 	TemplateID   string `json:"templateId"`
 	TemplateName string `json:"templateName"`
+	// Index is the job's position in the order it was added, starting at 1. It
+	// feeds {index} in the naming pattern and must be the same number the queue
+	// preview shows: an index the preview computes on the fly and the runner never
+	// passes gives two different file names for the same job.
+	Index int `json:"index"`
 
 	Status   Status   `json:"status"`
 	Message  string   `json:"message"`
 	Error    string   `json:"error"`
 	Warnings []string `json:"warnings"`
+
+	// Frozen marks a job whose ffmpeg process is currently suspended. The UI needs
+	// it to say 「已暂停」 rather than 「处理中」 next to a progress bar that has
+	// stopped moving -- from the outside the two look identical, and a bar that
+	// silently stalls reads as a hang, not as a pause the user asked for.
+	Frozen bool `json:"frozen"`
 
 	Command  string  `json:"command"`
 	Progress float64 `json:"progress"` // 0..1
@@ -116,6 +128,14 @@ type Job struct {
 	mu     *sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
+	// pid is the ffmpeg process while it runs, so 暂停 can freeze the process
+	// instead of only holding the queue back, and suspend is the handle that
+	// thaws it again. Both live under the runner's mutex rather than the job's:
+	// freezing is a queue-wide decision and the job lock is never held across an
+	// OS call. Frozen is the one exception -- it is job state the UI reads, so it
+	// goes through the job lock like every other visible field.
+	pid     int
+	suspend *sysx.SuspendedProcess
 }
 
 // NewJob builds a pending job for an input file.
@@ -161,6 +181,7 @@ func (j *Job) Snapshot() Job {
 	c := *j
 	c.cancel = nil
 	c.done = nil
+	c.suspend = nil
 	c.mu = &sync.Mutex{}
 	if j.LogTail != nil {
 		c.LogTail = append([]string(nil), j.LogTail...)
@@ -197,22 +218,35 @@ func (j *Job) addWarningLocked(msg string) {
 
 // Stats summarizes the whole queue.
 type Stats struct {
-	Total    int     `json:"total"`
-	Pending  int     `json:"pending"`
-	Running  int     `json:"running"`
-	Done     int     `json:"done"`
-	Warning  int     `json:"warning"`
-	Failed   int     `json:"failed"`
-	Canceled int     `json:"canceled"`
-	Skipped  int     `json:"skipped"`
-	Filtered int     `json:"filtered"`
-	Paused   bool    `json:"paused"`
+	Total    int  `json:"total"`
+	Pending  int  `json:"pending"`
+	Running  int  `json:"running"`
+	Done     int  `json:"done"`
+	Warning  int  `json:"warning"`
+	Failed   int  `json:"failed"`
+	Canceled int  `json:"canceled"`
+	Skipped  int  `json:"skipped"`
+	Filtered int  `json:"filtered"`
+	Paused   bool `json:"paused"`
+	// Started is false until the user presses 开始. It is what lets the UI say
+	// 「未开始」 instead of claiming a queue that simply has not been launched is
+	// "paused" -- and a paused queue must still be resumable, a not-yet-started
+	// one is not.
+	Started  bool    `json:"started"`
 	Workers  int     `json:"workers"`
 	Progress float64 `json:"progress"`
 }
 
 // Overall returns how far the queue has progressed (0..1).
 func (s Stats) Overall() float64 { return s.Progress }
+
+// ApplyResult reports what re-pointing jobs at another template changed.
+// Requeued is a subset of Applied: those jobs had already finished and were
+// sent back to 排队中 so 开始 re-runs them under the new parameters.
+type ApplyResult struct {
+	Applied  int `json:"applied"`
+	Requeued int `json:"requeued"`
+}
 
 // ---------------------------------------------------------------------------
 // Event names pushed to the frontend

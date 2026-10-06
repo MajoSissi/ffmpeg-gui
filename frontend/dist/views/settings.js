@@ -2,7 +2,7 @@ import { icon } from '../icons.js';
 import { esc, selectHtml, field, toast, confirmDialog, shellAction } from '../ui.js';
 
 // Only machine-level setup and UI state live here. "输出与命名 / 处理性能 /
-// 筛选条件 / 错误与警告" moved to the template page, because they are
+// 匹配条件 / 错误与警告" moved to the template page, because they are
 // per-template decisions now: the global template holds the defaults and each
 // template may override them. Nothing here points at the template page — the
 // settings page is a list of what it owns, not a map of everything else.

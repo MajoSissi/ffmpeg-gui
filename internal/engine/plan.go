@@ -154,6 +154,10 @@ func appendMapping(args []string, t store.Template, outExt string, info *media.I
 
 	if !t.MapAll {
 		// Default stream selection: one video + one audio, no subtitles.
+		//
+		// -sn is what keeps subtitles out. It is not a hidden constant -- it is the
+		// other side of the editor's 「保留全部流」 switch: turning that on replaces
+		// this with -map 0 plus a container-appropriate -c:s below.
 		args = append(args, "-sn")
 		return args, warn
 	}
@@ -441,6 +445,15 @@ func appendFilterArgs(t store.Template, info *media.Info) (args []string, warn [
 // computeScale resolves the target geometry. It works in display space so a
 // portrait clip tagged with a 90° rotation is handled like any other portrait
 // clip: the long edge is the long edge.
+//
+// Only the axis the user actually pinned is written into the filter. The other one
+// goes to ffmpeg as -1 (or -n when an alignment is asked for), which keeps the
+// aspect ratio and rounds to that multiple. Computing both sides here and handing
+// ffmpeg two finished numbers meant the program was deciding the geometry, and any
+// difference between that guess and what ffmpeg really produces stayed invisible.
+//
+// tw/th are still returned for display (the preview and the history record); for
+// the auto modes they are the value ffmpeg will land on, computed the same way.
 func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter string, applied bool, warn string) {
 	if !r.Enabled() || info == nil || !info.HasVideo() {
 		return 0, 0, "", false, ""
@@ -455,11 +468,11 @@ func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter stri
 		mult = 2
 	}
 	algo := r.Algorithm
-	if algo == "" {
-		algo = store.ScaleLanczos
-	}
 
 	var targetW, targetH int
+	// What goes into scale=w:h. Left blank by the modes that compute both sides;
+	// the auto modes fill one of them with -1 / -n instead of a number.
+	exprW, exprH := "", ""
 
 	switch r.Mode {
 	case store.ResizeLongEdge:
@@ -473,6 +486,11 @@ func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter stri
 		ratio := float64(r.LongEdge) / float64(long)
 		targetW = alignTo(int(math.Round(float64(srcW)*ratio)), mult)
 		targetH = alignTo(int(math.Round(float64(srcH)*ratio)), mult)
+		if srcW >= srcH {
+			exprW, exprH = itoa(r.LongEdge), autoDim(mult)
+		} else {
+			exprW, exprH = autoDim(mult), itoa(r.LongEdge)
+		}
 
 	case store.ResizeShortEdge:
 		short := minInt(srcW, srcH)
@@ -485,6 +503,11 @@ func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter stri
 		ratio := float64(r.ShortEdge) / float64(short)
 		targetW = alignTo(int(math.Round(float64(srcW)*ratio)), mult)
 		targetH = alignTo(int(math.Round(float64(srcH)*ratio)), mult)
+		if srcW <= srcH {
+			exprW, exprH = itoa(r.ShortEdge), autoDim(mult)
+		} else {
+			exprW, exprH = autoDim(mult), itoa(r.ShortEdge)
+		}
 
 	case store.ResizeExact:
 		switch {
@@ -493,9 +516,11 @@ func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter stri
 		case r.Width > 0:
 			targetW = r.Width
 			targetH = alignTo(int(math.Round(float64(srcH)*float64(r.Width)/float64(srcW))), mult)
+			exprW, exprH = itoa(r.Width), autoDim(mult)
 		case r.Height > 0:
 			targetH = r.Height
 			targetW = alignTo(int(math.Round(float64(srcW)*float64(r.Height)/float64(srcH))), mult)
+			exprW, exprH = autoDim(mult), itoa(r.Height)
 		default:
 			return 0, 0, "", false, "未填写目标宽高"
 		}
@@ -535,28 +560,52 @@ func computeScale(info *media.Info, r store.ResizeSpec) (tw, th int, filter stri
 	if targetW == srcW && targetH == srcH {
 		return 0, 0, "", false, ""
 	}
+	if exprW == "" {
+		exprW, exprH = itoa(targetW), itoa(targetH)
+	}
 
 	if r.PadToTarget && r.Mode == store.ResizeExact && r.Width > 0 && r.Height > 0 {
 		color := r.PadColor
 		if color == "" {
 			color = "black"
 		}
-		// Scale down to fit, then letterbox to the exact target.
-		fitW, fitH := targetW, targetH
+		// Scale down to fit, then letterbox to the exact target. Both numbers have
+		// to be real here: pad needs a box to fill, so there is no auto side.
 		scale := math.Min(float64(targetW)/float64(srcW), float64(targetH)/float64(srcH))
-		fitW = evenKeep(alignTo(int(math.Round(float64(srcW)*scale)), mult))
-		fitH = evenKeep(alignTo(int(math.Round(float64(srcH)*scale)), mult))
+		fitW := evenKeep(alignTo(int(math.Round(float64(srcW)*scale)), mult))
+		fitH := evenKeep(alignTo(int(math.Round(float64(srcH)*scale)), mult))
 		filter = fmt.Sprintf(
-			"scale=%d:%d:flags=%s,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:%s",
-			fitW, fitH, algo, targetW, targetH, color)
+			"%s,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:%s",
+			scaleExpr(itoa(fitW), itoa(fitH), algo), targetW, targetH, color)
 		return targetW, targetH, filter, true, ""
 	}
 
-	filter = fmt.Sprintf("scale=%d:%d:flags=%s", targetW, targetH, algo)
+	filter = scaleExpr(exprW, exprH, algo)
 	if !r.OnlyLarger && (targetW > srcW || targetH > srcH) {
 		warn = "目标分辨率大于源视频，画面会被放大"
 	}
 	return targetW, targetH, filter, true, warn
+}
+
+// autoDim is the value handed to ffmpeg for the axis the template did not pin:
+// -1 keeps the aspect ratio, -n additionally rounds that side to a multiple of n.
+// The default alignment of 2 therefore comes out as -2, which is what most
+// encoders need anyway.
+func autoDim(mult int) string {
+	if mult > 1 {
+		return "-" + itoa(mult)
+	}
+	return "-1"
+}
+
+// scaleExpr renders one scale filter. An empty algorithm leaves :flags= out, which
+// is the only honest way to say "whatever ffmpeg defaults to" -- writing
+// flags=bicubic here would claim a choice the user never made.
+func scaleExpr(w, h, algo string) string {
+	if algo == "" {
+		return "scale=" + w + ":" + h
+	}
+	return "scale=" + w + ":" + h + ":flags=" + algo
 }
 
 // ---------------------------------------------------------------------------

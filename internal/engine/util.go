@@ -118,7 +118,18 @@ type Naming struct {
 	Index    int
 }
 
-// ExpandPattern replaces {token} placeholders in pattern.
+// ExpandPattern replaces {token} placeholders in a rename pattern.
+//
+// The two callers mean different things by a file name, so they get different
+// token sets rather than one compromise:
+//
+//   - ExpandOutputPattern is the 输出与命名 template. There is no {ext}: the name
+//     is a file name, and the extension belongs to 「输出格式」. Offering it there
+//     made the output depend on two settings at once, and the only symptom was a
+//     preview that looked right until you changed container.
+//   - ExpandPattern is for files being moved aside (被排除 / 已处理过的源文件 /
+//     错误 / 警告). Nothing re-wraps them, so they keep their own extension and
+//     {ext} still means something.
 func ExpandPattern(pattern string, n Naming) string {
 	repl := map[string]string{
 		"{name}":     n.Name,
@@ -128,9 +139,34 @@ func ExpandPattern(pattern string, n Naming) string {
 		"{index}":    pad3(n.Index),
 		"{idx}":      pad3(n.Index),
 	}
+	return expand(pattern, repl, false)
+}
+
+// ExpandOutputPattern is ExpandPattern without {ext}. A leftover token from an
+// older template is stripped rather than left in: the extension that follows
+// already comes from the container, so "clip.{ext}" would otherwise produce
+// "clip..mp4".
+func ExpandOutputPattern(pattern string, n Naming) string {
+	repl := map[string]string{
+		"{name}":     n.Name,
+		"{template}": sanitize(n.Template),
+		"{dir}":      sanitize(n.Dir),
+		"{index}":    pad3(n.Index),
+		"{idx}":      pad3(n.Index),
+	}
+	return expand(pattern, repl, true)
+}
+
+// expand substitutes the tokens it is given. stripExt removes a {ext} that the
+// replacer left behind, which is how a template written before the token was
+// dropped from 「输出与命名」 ends up as "clip" rather than "clip.{ext}".
+func expand(pattern string, repl map[string]string, stripExt bool) string {
 	out := pattern
 	for k, v := range repl {
 		out = strings.ReplaceAll(out, k, v)
+	}
+	if stripExt {
+		out = strings.ReplaceAll(out, "{ext}", "")
 	}
 	return out
 }

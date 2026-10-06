@@ -72,7 +72,7 @@ type MoveRequest struct {
 	Src     string
 	SrcRoot string
 	Dest    store.DestRule
-	Pattern string // 支持 {name} {ext} 等占位符
+	Pattern string // 支持 {name} {ext} {template} {dir} {index} 等占位符
 	// Fallback backsstop a Dest rule that leaves Dir blank for the custom/mirror
 	// modes; without it those modes would have nowhere to write.
 	Fallback  store.DestRule
@@ -113,7 +113,9 @@ func Relocate(req MoveRequest) (string, error) {
 
 	newName := req.Pattern
 	if strings.TrimSpace(newName) == "" {
-		newName = "{name}.{ext}"
+		// A relocated file keeps its own extension -- there is no container to
+		// re-wrap it in, so the name has to carry the extension this time.
+		newName = "{name}." + ext
 	}
 	newName = ExpandPattern(newName, Naming{
 		Name:     name,
@@ -210,7 +212,27 @@ type OutputRequest struct {
 	SrcRoot string
 }
 
-// ResolveOutput returns the final output path (conflict policy applied).
+// OutputRoot returns the directory ResolveOutput would write into, without
+// naming a file.
+func OutputRoot(req OutputRequest) (string, error) {
+	if req.Info == nil {
+		return "", fmt.Errorf("缺少媒体信息")
+	}
+	// The same four modes every other stage gets; the blanks were already filled
+	// in by store.Template.Effective.
+	return store.ResolveDestDir(store.DestRequest{
+		Rule: store.DestRule{
+			Mode:   req.Tpl.OutMode,
+			Dir:    req.Tpl.OutDir,
+			Suffix: req.Tpl.OutSuffix,
+		},
+		SrcPath:       req.Info.Path,
+		SrcRoot:       req.SrcRoot,
+		DefaultSuffix: store.DefaultOutputSuffix,
+	})
+}
+
+// ResolveOutput returns the final output path.
 func ResolveOutput(req OutputRequest) (string, error) {
 	info := req.Info
 	tpl := req.Tpl
@@ -226,18 +248,7 @@ func ResolveOutput(req OutputRequest) (string, error) {
 	}
 
 	srcDir := filepath.Dir(info.Path)
-	// The same four modes every other stage gets; the blanks were already filled
-	// in by store.Template.Effective.
-	dir, err := store.ResolveDestDir(store.DestRequest{
-		Rule: store.DestRule{
-			Mode:   tpl.OutMode,
-			Dir:    tpl.OutDir,
-			Suffix: tpl.OutSuffix,
-		},
-		SrcPath:       info.Path,
-		SrcRoot:       req.SrcRoot,
-		DefaultSuffix: store.DefaultOutputSuffix,
-	})
+	dir, err := OutputRoot(req)
 	if err != nil {
 		return "", err
 	}
@@ -247,17 +258,16 @@ func ResolveOutput(req OutputRequest) (string, error) {
 
 	pattern := strings.TrimSpace(tpl.OutPattern)
 	if pattern == "" {
-		// Keep the source file name. The output directory already differs from the
-		// source one, so decorating the name as well would only add noise -- and
-		// when the mode is "与源文件同目录" the name is the only thing keeping the
-		// result apart from the input.
-		pattern = "{name}.{ext}"
+		// Keep the source file name, and nothing else. The output directory already
+		// differs from the source one, so decorating the name as well would only add
+		// noise -- and when the mode is "与源文件同目录" the name is the only thing
+		// keeping the result apart from the input.
+		//
+		pattern = "{name}"
 	}
-	// A pattern that only changes the extension should not gain a suffix.
-	// {ext} resolves to the *output* extension, not the source one: the name
-	// belongs to the file being written, so picking a different container has to
-	// change it too (mkv source -> mp4 output must not be named .mkv).
-	newName := ExpandPattern(pattern, Naming{
+	// The name is a file name: the extension comes from the container and is
+	// appended below, which is why ExpandOutputPattern has no {ext}.
+	newName := ExpandOutputPattern(pattern, Naming{
 		Name:     name,
 		Ext:      outExt,
 		Template: req.Tpl.Name,
@@ -271,6 +281,12 @@ func ResolveOutput(req OutputRequest) (string, error) {
 		return r
 	}, newName)
 
+	// A trailing dot is not an extension. It shows up when an older pattern's
+	// {ext} was stripped ("{name}.{ext}" -> "clip."), and letting it through
+	// produces "clip..mp4" or a name Windows refuses to create.
+	if strings.TrimSuffix(newName, ".") != newName {
+		newName = strings.TrimSuffix(newName, ".")
+	}
 	if filepath.Ext(newName) == "" && outExt != "" {
 		newName += "." + outExt
 	}
@@ -288,12 +304,9 @@ func ResolveOutput(req OutputRequest) (string, error) {
 		}
 	}
 
-	switch tpl.OutConflict {
-	case store.ConflictRename:
-		dest = EnsureUnique(dest, func(p string) bool {
-			_, err := os.Stat(p)
-			return err == nil
-		})
-	}
+	// An occupied path is NOT resolved away here. Renaming it would hand ffmpeg a
+	// fresh name and quietly double every batch; the 「已处理过的源文件」 policy wants
+	// to see that the file is there, and deciding what it means is the runner's
+	// job (engine.Runner.handleProcessed).
 	return dest, nil
 }

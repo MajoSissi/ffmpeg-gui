@@ -57,6 +57,11 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  /* The form controls are drawn in the app's own colours, but the parts WebView2
+     owns -- a <select>'s popup list, its scrollbar, the focus ring -- follow the
+     document's colour scheme. Without this they render light and a dark app
+     grows a white dropdown. */
+  color-scheme: dark;
   background: var(--bg);
   color: var(--on-surface);
   font-family: var(--font);
@@ -259,6 +264,14 @@ input, textarea, select, .selectable { user-select: text; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field > label { font-size: 11.5px; color: var(--on-surface-dim); font-weight: 500; }
 
+/* A field the current selection makes irrelevant. Dimmed to half and unclickable
+   rather than hidden: the row keeps its place so switching modes does not make
+   the whole grid jump, and the value stays readable. */
+.field.is-disabled, .check.is-disabled { opacity: .42; }
+.field.is-disabled .input,
+.field.is-disabled .select,
+.check.is-disabled { cursor: not-allowed; }
+
 .input, .select, .textarea {
   height: var(--ctl-h);
   background: var(--surface-2);
@@ -273,7 +286,9 @@ input, textarea, select, .selectable { user-select: text; }
   transition: border-color .14s ease, background .14s ease;
 }
 .textarea { height: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; resize: vertical; line-height: 1.5; }
-.input:focus, .select:focus, .textarea:focus { border-color: var(--primary); background: var(--surface-3); }
+/* background-color, not background: the shorthand would reset .select's
+   background-image and the dropdown arrow would vanish on focus. */
+.input:focus, .select:focus, .textarea:focus { border-color: var(--primary); background-color: var(--surface-3); }
 .input::placeholder, .textarea::placeholder { color: #6d717b; }
 .input:disabled, .select:disabled { opacity: .5; }
 
@@ -286,6 +301,9 @@ input, textarea, select, .selectable { user-select: text; }
   background-size: 16px;
   cursor: pointer;
 }
+.select:hover { background-color: var(--surface-3); }
+/* The popup belongs to the browser: colour-scheme on the root turns it dark,
+   these keep the rows themselves from coming back white. */
 .select option { background: #1d2027; color: var(--on-surface); }
 
 .input-group { display: flex; gap: 6px; align-items: center; }
@@ -490,16 +508,6 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   background: var(--surface-2);
 }
 
-/* Queue-level filter: a deliberate override, so it is tinted like an override. */
-.qfilter {
-  flex: none;
-  padding: 10px 16px 12px;
-  border-bottom: 1px solid var(--outline);
-  background: var(--surface-1);
-}
-.qfilter__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.qfilter__head b { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
-.qfilter__head b svg { color: var(--primary); }
 
 .empty {
   flex: 1; display: grid; place-items: center; text-align: center;
@@ -542,21 +550,35 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   content: ""; position: absolute; left: 50%; top: 2px; transform: translateX(-50%);
   width: 44px; height: 3px; border-radius: 2px; background: var(--outline-strong);
 }
-.panel__grip:hover::after { background: var(--on-surface-dim); }
+/* Brighter than the old hairline: a resize target you can only find by
+   accident is not a resize affordance. */
+.panel__grip:hover::after { background: var(--primary); width: 60px; }
 
 .panel__head {
   flex: none;
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 12px 0;
+  /* stretch, not center: the tabs have to be one equal-height band that fills
+     the bar. Centred, each tab kept its own 7px/9px padding box and the three
+     of them floated inside a taller bar with the active underline hovering a
+     pixel above the head's own rule. */
+  display: flex; align-items: stretch; gap: 2px;
+  height: 34px;
+  padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--outline);
 }
+/* Everything that is not a tab keeps its natural height -- stretch would turn
+   a 28px button into a 34px one and the hint into a full-height block. */
+.panel__head > .spacer,
+.panel__head > .hint,
+.panel__head > .btn { align-self: center; }
 .tab {
   appearance: none; border: 0; background: transparent;
   color: var(--on-surface-dim); font: inherit; font-size: 12px; font-weight: 500;
-  padding: 7px 11px 9px; cursor: pointer;
+  padding: 0 12px; cursor: pointer;
   border-bottom: 2px solid transparent;
+  /* Lay the underline on the head's rule instead of a pixel above it. */
+  margin-bottom: -1px;
   border-radius: 6px 6px 0 0;
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 .tab:hover { color: var(--on-surface); background: var(--surface-2); }
 .tab.is-active { color: var(--primary); border-bottom-color: var(--primary); }
@@ -649,14 +671,9 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
    you actually reach for -- to the bottom of the head. */
 .tpl-list__bar { display: flex; align-items: center; gap: 2px; }
 .tpl-list__items { flex: 1; min-height: 0; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.tpl-list__tip {
-  flex: none; padding: 7px 12px; border-top: 1px solid var(--outline);
-  font-size: 10.5px; color: var(--on-surface-dim);
-}
-/* A caption used to sit here ("模板"), labelling everything below the defaults card. It
-   was the third naming of the same thing -- page title, list title, then this -- so the
-   divider is now just a hairline: enough to keep the defaults from looking like just
-   another preset, not enough to be read as a heading. */
+/* A caption used to sit here ("拖动可排序 · 右键更多操作"). Two facts the rows
+   already show -- every row has a drag grip, and right-clicking one is how the
+   menu opens -- so it was a framed strip of instructions nobody read. */
 .tpl-list__divider {
   flex: none;
   margin: 6px 8px 4px;
@@ -782,7 +799,51 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   overflow: hidden;
 }
 .modal--wide { width: min(1180px, 95vw); height: 86vh; }
-.modal--narrow { width: min(560px, 92vw); }
+
+/* Confirm-style prompts: a title up top, then one short sentence and two
+   buttons in a single lower block. The generic chrome drew a line under the
+   head *and* one above the foot, so the sentence ended up in a 43px band
+   between two 60px bars. Here the head is one text line tall, the body and
+   the foot share one surface, and the buttons are the small variant. */
+.modal--dialog { width: min(440px, 92vw); }
+.modal--dialog .modal__head {
+  position: relative;
+  /* One line, like the text below it -- a title row twice as tall as the
+     sentence it introduces is a header, not a label. */
+  padding: 8px 44px 8px 16px;
+  border-bottom: 0;
+}
+.modal--dialog .modal__head h2 { font-size: 13.5px; }
+.modal--dialog .modal__head [data-close] {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  height: 26px; width: 26px; border-radius: 8px;
+}
+/* One surface for the message and the buttons; nothing separates them. The
+   sentence starts on the same line as the title, not centred under it. */
+.modal--dialog .modal__body {
+  padding: 2px 20px 14px;
+  background: var(--surface-2);
+}
+.modal--dialog .modal__foot {
+  padding: 0 16px 14px;
+  border-top: 0;
+  background: var(--surface-2);
+}
+/* Both buttons are pills on that surface -- 取消 is not a bare text link, or
+   the pair would read as one button plus a stray word. */
+.modal--dialog .modal__foot .btn--danger {
+  background: var(--err); border-color: transparent; color: #2a0a08; font-weight: 600;
+}
+.modal--dialog .modal__foot .btn--danger:hover { background: #ffc7c2; }
+
+/* The sentence itself: no leading/trailing margin to fight the padding. */
+.dialog__text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  text-align: left;
+  color: var(--on-surface-var);
+}
 
 .modal__head { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--outline); }
 .modal__head h2 { margin: 0; font-size: 14px; font-weight: 600; }

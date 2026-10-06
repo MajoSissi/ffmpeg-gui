@@ -123,9 +123,24 @@ export function statusMeta(s) {
   return STATUS_META[s] || { label: s || '—', chip: 'chip--muted', bar: '' };
 }
 
-export function statusChip(s) {
+/**
+ * The chip for a job's row.
+ *
+ * `frozen` is separate from the status on purpose: a suspended job is still
+ * `running` as far as the pipeline is concerned, but showing 「处理中」 next to a
+ * progress bar that has stopped moving reads as a hang. The queue keeps working on
+ * a paused job's terms, so the state is passed alongside rather than folded into
+ * STATUS_META -- there is no `paused` status to key off.
+ */
+export function statusChip(s, frozen) {
+  if (frozen) return `<span class="chip chip--warn">已暂停</span>`;
   const m = statusMeta(s);
   return `<span class="chip ${m.chip}">${esc(m.label)}</span>`;
+}
+
+/** The label a status column should read, honouring the frozen flag. */
+export function statusLabel(s, frozen) {
+  return frozen ? '已暂停' : statusMeta(s).label;
 }
 
 /* -------------------------------------------------------------------- toast */
@@ -306,11 +321,14 @@ export function confirmDialog(title, message, confirmLabel = '确定', danger = 
   return new Promise((resolve) => {
     const { modal, close } = openModal({
       title,
-      size: 'modal--narrow',
-      body: `<div style="padding:18px 18px 6px;font-size:13px;color:var(--on-surface-var)">${esc(message)}</div>`,
+      // Its own size class, not modal--narrow: the generic chrome (a 63px head
+      // and a 59px foot around a 43px body) squeezed the sentence into a thin
+      // band that read as off-centre. See .modal--dialog in styles.css.
+      size: 'modal--dialog',
+      body: `<p class="dialog__text">${esc(message)}</p>`,
       footer: `<div class="spacer"></div>
-        <button class="btn btn--text" data-no>取消</button>
-        <button class="btn ${danger ? 'btn--danger' : 'btn--filled'}" data-yes>${esc(confirmLabel)}</button>`,
+        <button class="btn btn--sm ${danger ? 'btn--danger' : 'btn--filled'}" data-yes>${esc(confirmLabel)}</button>
+        <button class="btn btn--sm btn--tonal" data-no>取消</button>`,
     });
     modal.querySelector('[data-no]').addEventListener('click', () => { close(); resolve(false); });
     modal.querySelector('[data-yes]').addEventListener('click', () => { close(); resolve(true); });

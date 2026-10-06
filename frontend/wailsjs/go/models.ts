@@ -1,5 +1,19 @@
 export namespace engine {
 	
+	export class ApplyResult {
+	    applied: number;
+	    requeued: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ApplyResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.applied = source["applied"];
+	        this.requeued = source["requeued"];
+	    }
+	}
 	export class Job {
 	    id: string;
 	    input: string;
@@ -9,10 +23,12 @@ export namespace engine {
 	    sourceRoot: string;
 	    templateId: string;
 	    templateName: string;
+	    index: number;
 	    status: string;
 	    message: string;
 	    error: string;
 	    warnings: string[];
+	    frozen: boolean;
 	    command: string;
 	    progress: number;
 	    speed: number;
@@ -53,10 +69,12 @@ export namespace engine {
 	        this.sourceRoot = source["sourceRoot"];
 	        this.templateId = source["templateId"];
 	        this.templateName = source["templateName"];
+	        this.index = source["index"];
 	        this.status = source["status"];
 	        this.message = source["message"];
 	        this.error = source["error"];
 	        this.warnings = source["warnings"];
+	        this.frozen = source["frozen"];
 	        this.command = source["command"];
 	        this.progress = source["progress"];
 	        this.speed = source["speed"];
@@ -136,6 +154,7 @@ export namespace engine {
 	    skipped: number;
 	    filtered: number;
 	    paused: boolean;
+	    started: boolean;
 	    workers: number;
 	    progress: number;
 	
@@ -155,6 +174,7 @@ export namespace engine {
 	        this.skipped = source["skipped"];
 	        this.filtered = source["filtered"];
 	        this.paused = source["paused"];
+	        this.started = source["started"];
 	        this.workers = source["workers"];
 	        this.progress = source["progress"];
 	    }
@@ -203,9 +223,9 @@ export namespace main {
 	    rateControls: Option[];
 	    padColors: Option[];
 	    outputModes: Option[];
-	    conflictModes: Option[];
-	    problemActions: Option[];
 	    filterActions: Option[];
+	    problemActions: Option[];
+	    existingActions: Option[];
 	    destModes: Option[];
 	
 	    static createFrom(source: any = {}) {
@@ -224,9 +244,9 @@ export namespace main {
 	        this.rateControls = this.convertValues(source["rateControls"], Option);
 	        this.padColors = this.convertValues(source["padColors"], Option);
 	        this.outputModes = this.convertValues(source["outputModes"], Option);
-	        this.conflictModes = this.convertValues(source["conflictModes"], Option);
-	        this.problemActions = this.convertValues(source["problemActions"], Option);
 	        this.filterActions = this.convertValues(source["filterActions"], Option);
+	        this.problemActions = this.convertValues(source["problemActions"], Option);
+	        this.existingActions = this.convertValues(source["existingActions"], Option);
 	        this.destModes = this.convertValues(source["destModes"], Option);
 	    }
 	
@@ -402,30 +422,6 @@ export namespace main {
 	}
 	
 	
-	export class PreviewItem {
-	    jobId: string;
-	    input: string;
-	    output: string;
-	    bin: string;
-	    args: string[];
-	    command: string;
-	    notes: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new PreviewItem(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.jobId = source["jobId"];
-	        this.input = source["input"];
-	        this.output = source["output"];
-	        this.bin = source["bin"];
-	        this.args = source["args"];
-	        this.command = source["command"];
-	        this.notes = source["notes"];
-	    }
-	}
 
 }
 
@@ -627,6 +623,42 @@ export namespace store {
 	        this.suffix = source["suffix"];
 	    }
 	}
+	export class ExistingSpec {
+	    action: string;
+	    dest: DestRule;
+	    pattern?: string;
+	    overwrite: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExistingSpec(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.dest = this.convertValues(source["dest"], DestRule);
+	        this.pattern = source["pattern"];
+	        this.overwrite = source["overwrite"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class FilterSpec {
 	    minSizeMB: number;
 	    maxSizeMB: number;
@@ -678,42 +710,6 @@ export namespace store {
 		    }
 		    return a;
 		}
-	}
-	export class LegacyFilterRules {
-	    minSizeMB: number;
-	    maxSizeMB: number;
-	    minLongEdge: number;
-	    maxLongEdge: number;
-	    minDuration: number;
-	    maxDuration: number;
-	    includeExts: string[];
-	    excludeExts: string[];
-	    action: string;
-	    targetDir: string;
-	    renamePattern: string;
-	    mirrorTree: boolean;
-	    overwrite: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new LegacyFilterRules(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.minSizeMB = source["minSizeMB"];
-	        this.maxSizeMB = source["maxSizeMB"];
-	        this.minLongEdge = source["minLongEdge"];
-	        this.maxLongEdge = source["maxLongEdge"];
-	        this.minDuration = source["minDuration"];
-	        this.maxDuration = source["maxDuration"];
-	        this.includeExts = source["includeExts"];
-	        this.excludeExts = source["excludeExts"];
-	        this.action = source["action"];
-	        this.targetDir = source["targetDir"];
-	        this.renamePattern = source["renamePattern"];
-	        this.mirrorTree = source["mirrorTree"];
-	        this.overwrite = source["overwrite"];
-	    }
 	}
 	export class MediaSummary {
 	    exists: boolean;
@@ -778,8 +774,10 @@ export namespace store {
 	export class ProblemSpec {
 	    errorAction: string;
 	    errorDest: DestRule;
+	    errorPattern?: string;
 	    warningAction: string;
 	    warningDest: DestRule;
+	    warningPattern?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProblemSpec(source);
@@ -789,8 +787,10 @@ export namespace store {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.errorAction = source["errorAction"];
 	        this.errorDest = this.convertValues(source["errorDest"], DestRule);
+	        this.errorPattern = source["errorPattern"];
 	        this.warningAction = source["warningAction"];
 	        this.warningDest = this.convertValues(source["warningDest"], DestRule);
+	        this.warningPattern = source["warningPattern"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -926,24 +926,9 @@ export namespace store {
 	    logKeepDays: number;
 	    lastTemplateId: string;
 	    showLogPanel: boolean;
-	    logPanelHeight: number;
 	    logDir: string;
-	    queueFilter?: FilterSpec;
-	    queueFilterSet?: boolean;
-	    outputDirMode?: string;
-	    outputDir?: string;
-	    outputSuffix?: string;
-	    namePattern?: string;
-	    conflict?: string;
-	    concurrency?: number;
-	    logLevel?: string;
-	    retryCount?: number;
-	    deleteOnFail?: boolean;
-	    onErrorAction?: string;
-	    onErrorDir?: string;
-	    onWarningAction?: string;
-	    onWarningDir?: string;
-	    filters?: LegacyFilterRules;
+	    logPanelHeight: number;
+	    logPanelSized: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -967,43 +952,10 @@ export namespace store {
 	        this.logKeepDays = source["logKeepDays"];
 	        this.lastTemplateId = source["lastTemplateId"];
 	        this.showLogPanel = source["showLogPanel"];
-	        this.logPanelHeight = source["logPanelHeight"];
 	        this.logDir = source["logDir"];
-	        this.queueFilter = this.convertValues(source["queueFilter"], FilterSpec);
-	        this.queueFilterSet = source["queueFilterSet"];
-	        this.outputDirMode = source["outputDirMode"];
-	        this.outputDir = source["outputDir"];
-	        this.outputSuffix = source["outputSuffix"];
-	        this.namePattern = source["namePattern"];
-	        this.conflict = source["conflict"];
-	        this.concurrency = source["concurrency"];
-	        this.logLevel = source["logLevel"];
-	        this.retryCount = source["retryCount"];
-	        this.deleteOnFail = source["deleteOnFail"];
-	        this.onErrorAction = source["onErrorAction"];
-	        this.onErrorDir = source["onErrorDir"];
-	        this.onWarningAction = source["onWarningAction"];
-	        this.onWarningDir = source["onWarningDir"];
-	        this.filters = this.convertValues(source["filters"], LegacyFilterRules);
+	        this.logPanelHeight = source["logPanelHeight"];
+	        this.logPanelSized = source["logPanelSized"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class Template {
 	    id: string;
@@ -1036,9 +988,9 @@ export namespace store {
 	    outDir: string;
 	    outSuffix: string;
 	    outPattern: string;
-	    outConflict: string;
 	    outputOverride?: boolean;
 	    perf?: PerfSpec;
+	    existing?: ExistingSpec;
 	    filter?: FilterSpec;
 	    problems?: ProblemSpec;
 	    mapAll: boolean;
@@ -1088,9 +1040,9 @@ export namespace store {
 	        this.outDir = source["outDir"];
 	        this.outSuffix = source["outSuffix"];
 	        this.outPattern = source["outPattern"];
-	        this.outConflict = source["outConflict"];
 	        this.outputOverride = source["outputOverride"];
 	        this.perf = this.convertValues(source["perf"], PerfSpec);
+	        this.existing = this.convertValues(source["existing"], ExistingSpec);
 	        this.filter = this.convertValues(source["filter"], FilterSpec);
 	        this.problems = this.convertValues(source["problems"], ProblemSpec);
 	        this.mapAll = source["mapAll"];

@@ -1,8 +1,8 @@
 import { icon } from '../icons.js';
 import {
-  esc, humanSize, humanDuration, humanElapsed, resolution, pct, statusChip, statusMeta,
-  toast, openModal, closeModal, confirmDialog, copyText, dateText, num, bitrateText,
-  shellAction, commandHtml, field, selectHtml,
+  esc, humanSize, humanDuration, humanElapsed, resolution, pct, statusChip, statusMeta, statusLabel,
+  toast, confirmDialog, copyText, dateText, num, bitrateText,
+  shellAction, commandHtml,
 } from '../ui.js';
 import { effective } from './sections.js';
 
@@ -15,9 +15,6 @@ export function createTasksView(ctx) {
       <button class="btn btn--tonal" data-act="add-folder">${icon('folderOpen')}添加文件夹</button>
       <div class="sep"></div>
       <select class="select" data-role="template" title="处理模板"></select>
-      <button class="btn btn--outline" data-act="preview-command">${icon('terminal')}命令预览</button>
-      <button class="btn btn--outline" data-act="toggle-filter" data-role="filter-btn"
-        title="只对当前队列生效，优先于模板里的筛选条件">${icon('filter')}<span data-role="filter-btn-text">筛选条件</span></button>
       <div class="sep"></div>
       <button class="btn btn--filled" data-act="start">${icon('play')}开始</button>
       <button class="btn" data-act="pause">${icon('pause')}暂停</button>
@@ -31,16 +28,6 @@ export function createTasksView(ctx) {
         <button class="btn btn--text btn--icon" data-act="retry" title="重试失败的任务">${icon('refresh')}</button>
         <button class="btn btn--text btn--icon" data-act="clear-finished" title="清理已完成">${icon('trash')}</button>
       </div>
-    </div>
-
-    <div class="qfilter" data-role="qfilter" hidden>
-      <div class="qfilter__head">
-        <b>${icon('filter', 'sm')}本批次的筛选条件</b>
-        <span class="hint">优先于模板与全局模板里的筛选，只影响当前队列</span>
-        <div class="spacer"></div>
-        <button class="btn btn--text btn--sm" data-act="qfilter-clear">${icon('close', 'sm')}不用筛选</button>
-      </div>
-      <div class="grid grid--4" data-role="qfilter-fields"></div>
     </div>
 
     <div class="bulkbar" data-role="bulkbar" hidden>
@@ -74,13 +61,14 @@ export function createTasksView(ctx) {
       </div>
     </div>
     <div class="panel" data-role="panel">
-      <div class="panel__grip" data-role="grip"></div>
+      <div class="panel__grip" data-role="grip" title="上下拖动可调整面板高度"></div>
       <div class="panel__head">
         <button class="tab is-active" data-tab="log">${icon('terminal')}输出日志</button>
         <button class="tab" data-tab="running">${icon('gauge')}处理详情</button>
-        <button class="tab" data-tab="command">${icon('chevronRight')}命令</button>
+        <button class="tab" data-tab="command">${icon('terminal')}命令预览</button>
         <div class="spacer"></div>
         <span class="hint" data-role="panel-hint"></span>
+        <button class="btn btn--tonal btn--sm" data-act="copy-command" title="复制这条命令" hidden>${icon('copy', 'sm')}复制</button>
         <button class="btn btn--text btn--icon btn--sm" data-act="panel-toggle" title="折叠/展开">${icon('chevronDown')}</button>
       </div>
       <div class="panel__body">
@@ -99,12 +87,11 @@ export function createTasksView(ctx) {
   const detailsEl = el.querySelector('[data-role=details]');
   const commandEl = el.querySelector('[data-role=command]');
   const commandTextEl = el.querySelector('[data-role=command-text]');
+  const copyCmdBtn = el.querySelector('[data-act=copy-command]');
   const panelEl = el.querySelector('[data-role=panel]');
   const gripEl = el.querySelector('[data-role=grip]');
   const tplSelect = el.querySelector('[data-role=template]');
   const bulkbarEl = el.querySelector('[data-role=bulkbar]');
-  const qfilterEl = el.querySelector('[data-role=qfilter]');
-  const qfilterFields = el.querySelector('[data-role=qfilter-fields]');
 
   const local = {
     tab: 'log',
@@ -114,9 +101,9 @@ export function createTasksView(ctx) {
     collapsed: false,
     // Anchor for shift-click range selection: the last row picked without a modifier.
     anchorId: '',
-    // The queue filter panel is its own working copy; it edits live on input so the
-    // chip above the table keeps telling the truth about what will run.
-    qfilter: null,
+    // The command currently rendered in the preview, kept so 复制 has something
+    // to copy without walking the rendered markup.
+    lastCommand: '',
   };
 
   /* ------------------------------------------------------------ template */
@@ -145,18 +132,42 @@ export function createTasksView(ctx) {
     // fall back to something processable, or the queue would have no template.
     if (!tpls.some((t) => t.id === ctx.state.currentTemplateId)) {
       ctx.state.currentTemplateId = tpls[0]?.id || '';
+      // The backend reads settings.lastTemplateId when files are added. Leaving
+      // it empty (first run, or after the template it pointed at was deleted)
+      // makes the backend guess on its own, and the queue can end up bound to a
+      // different template than the one the toolbar shows.
+      if (ctx.state.currentTemplateId) {
+        ctx.state.settings = { ...ctx.state.settings, lastTemplateId: ctx.state.currentTemplateId };
+        ctx.api.saveSettings(ctx.state.settings).catch(() => {});
+      }
     }
     renderToolbar();
   }
 
+  /**
+   * The toolbar binds the whole queue to one template, so switching it has to
+   * move every row at once -- the backend re-points them and sends the finished
+   * ones back to 排队中. It only broadcasts stats, though, so the rows and the
+   * command preview have to be pulled again here or they would keep showing the
+   * previous template until some unrelated event happened to repaint.
+   */
   tplSelect.addEventListener('change', async () => {
     ctx.state.currentTemplateId = tplSelect.value;
     const s = { ...ctx.state.settings, lastTemplateId: tplSelect.value };
     ctx.state.settings = s;
     await ctx.api.saveSettings(s);
-    const n = await ctx.api.setAllTemplates(tplSelect.value);
-    if (n > 0) toast(`已对 ${n} 个排队任务应用新模板`, 'success');
-    else toast('模板已切换', 'info', 1600);
+    const name = tplSelect.selectedOptions[0]?.textContent || '';
+    const r = await ctx.api.setAllTemplates(tplSelect.value);
+    const applied = r?.applied || 0;
+    await refreshJobs();
+    if (local.tab === 'command') await refreshCommand();
+    if (applied > 0) {
+      const back = r?.requeued || 0;
+      toast(`已对 ${applied} 个任务应用「${name}」`
+        + (back > 0 ? `，其中 ${back} 个已重新排队` : ''), 'success');
+    } else {
+      toast('模板已切换', 'info', 1600);
+    }
   });
 
   /* -------------------------------------------------------------- actions */
@@ -167,17 +178,25 @@ export function createTasksView(ctx) {
       const act = btn.dataset.act;
       if (act === 'add-files') {
         const r = await ctx.api.addFilesDialog(ctx.state.recursive);
-        reportAdd(r);
+        await reportAdd(r);
       } else if (act === 'add-folder') {
         const r = await ctx.api.addFolderDialog(ctx.state.recursive);
-        reportAdd(r);
+        await reportAdd(r);
       } else if (act === 'start') {
         ctx.state.autoStarted = true;
         await ctx.api.startQueue();
         toast('开始处理队列', 'success', 1800);
       } else if (act === 'pause') {
         const paused = await ctx.api.togglePause();
-        toast(paused ? '队列已暂停（当前任务继续完成）' : '队列已继续', 'info', 2200);
+        // The button's own label is the only feedback, and it comes from the stats
+        // broadcast rather than from this call -- which may not arrive if nothing
+        // else changes. Pull it so the label is right immediately. The rows are
+        // pulled too: freezing a process flips each running job's Frozen flag, and
+        // that is a per-row badge the toolbar event does not carry.
+        ctx.state.stats = await ctx.api.stats();
+        await refreshJobs();
+        renderToolbar();
+        toast(paused ? '已暂停，进行中的任务会保留进度' : '队列已继续', 'info', 2200);
       } else if (act === 'stop') {
         if (await confirmDialog('停止处理', '将取消正在运行的任务，并把排队中的任务标记为已取消。', '停止', true)) {
           await ctx.api.stopQueue();
@@ -190,15 +209,6 @@ export function createTasksView(ctx) {
         const n = await ctx.api.removeFinished();
         if (n > 0) await refreshJobs();
         toast(n > 0 ? `已清理 ${n} 个任务` : '没有可清理的任务', 'info');
-      } else if (act === 'toggle-filter') {
-        toggleQueueFilter();
-      } else if (act === 'qfilter-clear') {
-        // "Not filtering" is a distinct state from "filtering with no rules": the
-        // first hands the decision back to the template, the second would silently
-        // drop the template's own rules.
-        local.qfilter = null;
-        await pushQueueFilter();
-        renderQueueFilter();
       } else if (act === 'bulk-remove') {
         await removeChecked();
       } else if (act === 'select-all') {
@@ -207,8 +217,9 @@ export function createTasksView(ctx) {
       } else if (act === 'select-none') {
         local.checked.clear();
         paintSelection();
-      } else if (act === 'preview-command') {
-        await showCommandPreview();
+      } else if (act === 'copy-command') {
+        if (!local.lastCommand) return;
+        toast((await copyText(local.lastCommand)) ? '命令已复制' : '复制失败', 'success', 1600);
       } else if (act === 'panel-toggle') {
         local.collapsed = !local.collapsed;
         applyPanel();
@@ -287,18 +298,6 @@ export function createTasksView(ctx) {
     }
   });
 
-  // The queue filter edits live: every keystroke updates the backend so the chip and
-  // the command preview describe the rules that will actually run, not the ones that
-  // were there when the panel opened.
-  qfilterFields.addEventListener('input', async () => {
-    local.qfilter = readQueueFilter();
-    await pushQueueFilter();
-  });
-  qfilterFields.addEventListener('change', async () => {
-    local.qfilter = readQueueFilter();
-    await pushQueueFilter();
-  });
-
   /**
    * Re-pull the queue from the backend and repaint. Removals never arrive as a
    * `job:update` -- the backend only broadcasts stats for them -- so without this
@@ -336,146 +335,79 @@ export function createTasksView(ctx) {
     else await shellAction(ctx.api.revealPath(job.input));
   });
 
-  function reportAdd(r) {
-    if (!r) return;
-    if (r.added > 0) toast(`已添加 ${r.added} 个文件`, 'success');
-    else toast('没有添加任何文件', 'warning');
-    (r.errors || []).slice(0, 3).forEach((m) => toast(m, 'error', 5000));
-  }
-
-  /* --------------------------------------------------------- queue filter */
-
   /**
-   * The queue filter: a filter that outranks the template's, for "this batch, these
-   * files only". It is deliberately NOT part of the template -- changing the template
-   * to suit one batch would silently change every other batch bound to it.
+   * Adding files only broadcasts the queue counters, never the rows, so the
+   * list has to be pulled here: otherwise the total chip goes up while the
+   * table stays empty until some unrelated event happens to repaint it.
    */
-  function seedQueueFilter() {
-    const s = ctx.state.settings || {};
-    if (s.queueFilter && typeof s.queueFilter === 'object') return { ...s.queueFilter };
-    // Start from what the template would do, so "open the panel and change one number"
-    // does not wipe the rules the user cannot see.
-    const f = currentTemplate().filter || {};
-    return {
-      minSizeMB: 0, maxSizeMB: 0, minLongEdge: 0, maxLongEdge: 0, minDuration: 0, maxDuration: 0,
-      includeExts: [], excludeExts: [],
-      action: f.action || 'keep',
-      dest: { ...(f.dest || {}) },
-      renamePattern: f.renamePattern || '',
-      overwrite: !!f.overwrite,
-    };
-  }
-
-  function readQueueFilter() {
-    const get = (n) => el.querySelector(`[data-role=qfilter-fields] [name=qf_${n}]`);
-    const numOf = (n) => Number(get(n)?.value || 0) || 0;
-    const exts = (n) => (get(n)?.value || '').split(',').map((s) => s.trim()).filter(Boolean);
-    return {
-      minSizeMB: numOf('minSizeMB'),
-      maxSizeMB: numOf('maxSizeMB'),
-      minLongEdge: numOf('minLongEdge'),
-      maxLongEdge: numOf('maxLongEdge'),
-      minDuration: numOf('minDuration'),
-      maxDuration: numOf('maxDuration'),
-      includeExts: exts('includeExts'),
-      excludeExts: exts('excludeExts'),
-      action: get('action')?.value || 'keep',
-      dest: {
-        mode: get('destMode')?.value || '',
-        dir: get('destDir')?.value || '',
-        suffix: get('destSuffix')?.value || '',
-      },
-      renamePattern: get('renamePattern')?.value || '',
-      overwrite: !!get('overwrite')?.checked,
-    };
-  }
-
-  /** Push the panel's values to the backend. A nil filter means "use the template's". */
-  async function pushQueueFilter() {
-    const active = !!local.qfilter && filterActive(local.qfilter);
-    await ctx.api.setQueueFilter(active ? local.qfilter : null);
-    // Re-render so the button label and tint follow the rules that are actually in
-    // effect -- an empty panel means "no override", not "an override that matches nothing".
-    renderQueueFilter();
-    renderToolbar();
-  }
-
-  function toggleQueueFilter() {
-    if (local.qfilter) {
-      local.qfilter = null;
+  async function reportAdd(r) {
+    if (!r) return;
+    if (r.added > 0) {
+      await refreshJobs();
+      toast(`已添加 ${r.added} 个文件`, 'success');
     } else {
-      local.qfilter = seedQueueFilter();
-      qfilterEl.hidden = false;
+      toast('没有添加任何文件', 'warning');
     }
-    renderQueueFilter();
-    pushQueueFilter();
-  }
-
-  function filterActive(f) {
-    return f && (f.minSizeMB > 0 || f.maxSizeMB > 0 || f.minLongEdge > 0 || f.maxLongEdge > 0
-      || f.minDuration > 0 || f.maxDuration > 0
-      || (f.includeExts || []).length > 0 || (f.excludeExts || []).length > 0);
-  }
-
-  function renderQueueFilter() {
-    qfilterEl.hidden = !local.qfilter;
-    const btnText = el.querySelector('[data-role=filter-btn-text]');
-    if (local.qfilter && filterActive(local.qfilter)) {
-      btnText.textContent = '筛选中';
-      el.querySelector('[data-act=toggle-filter]').classList.add('btn--tonal');
-      el.querySelector('[data-act=toggle-filter]').classList.remove('btn--outline');
-    } else {
-      btnText.textContent = '筛选条件';
-      el.querySelector('[data-act=toggle-filter]').classList.remove('btn--tonal');
-      el.querySelector('[data-act=toggle-filter]').classList.add('btn--outline');
-    }
-    if (!local.qfilter) {
-      // Drop the built fields so reopening the panel starts from the template again
-      // instead of showing whatever was typed last time.
-      qfilterFields.innerHTML = '';
-      return;
-    }
-    // Rebuilding the inputs while one of them has focus would drop the caret on every
-    // keystroke, because the panel re-renders on each input event. So the fields are
-    // only built when the panel opens; after that they are left alone.
-    if (qfilterFields.childElementCount) return;
-    const o = opts();
-    const d = local.qfilter;
-    const dest = d.dest || {};
-    qfilterFields.innerHTML = `
-      ${field('最小体积 (MB)', `<input class="input" type="number" min="0" step="1" name="qf_minSizeMB" value="${d.minSizeMB ?? 0}">`, '留 0 表示不限制')}
-      ${field('最大体积 (MB)', `<input class="input" type="number" min="0" step="1" name="qf_maxSizeMB" value="${d.maxSizeMB ?? 0}">`)}
-      ${field('最短时长 (秒)', `<input class="input" type="number" min="0" name="qf_minDuration" value="${d.minDuration ?? 0}">`)}
-      ${field('最长时长 (秒)', `<input class="input" type="number" min="0" name="qf_maxDuration" value="${d.maxDuration ?? 0}">`)}
-      ${field('长边下限 (px)', `<input class="input" type="number" min="0" name="qf_minLongEdge" value="${d.minLongEdge ?? 0}">`, '横竖屏都取较长的一边')}
-      ${field('长边上限 (px)', `<input class="input" type="number" min="0" name="qf_maxLongEdge" value="${d.maxLongEdge ?? 0}">`)}
-      ${field('仅处理这些扩展名', `<input class="input mono" name="qf_includeExts" value="${esc((d.includeExts || []).join(','))}" placeholder="mp4,mkv">`, '逗号分隔，留空表示全部')}
-      ${field('排除这些扩展名', `<input class="input mono" name="qf_excludeExts" value="${esc((d.excludeExts || []).join(','))}" placeholder="webm,gif">`)}
-      ${field('被排除的文件', selectHtml('qf_action', (o.filterActions || []).filter((x) => x.value !== ''), d.action || 'keep'))}
-      ${field('输出方式', selectHtml('qf_destMode', o.destModes || [], dest.mode || ''), '与「输出与命名」相同的四种方式')}
-      ${field('目录后缀', `<input class="input mono" name="qf_destSuffix" value="${esc(dest.suffix || '')}" placeholder="_out">`, '「同级目录 + 后缀」模式使用')}
-      ${field('指定目录', `<input class="input mono" name="qf_destDir" value="${esc(dest.dir || '')}" placeholder="例如 D:\\Media\\small">`, 'custom / mirror 模式使用')}
-      ${field('重命名模板', `<input class="input mono" name="qf_renamePattern" value="${esc(d.renamePattern || '')}" placeholder="{name}.{ext}">`, '可用变量：{name} {ext} {template} {dir}')}
-      ${field('覆盖同名文件', `<label class="check" style="height:34px"><input type="checkbox" name="qf_overwrite"${d.overwrite ? ' checked' : ''}><span class="hint">关闭时自动追加 _1</span></label>`)}`;
+    (r.errors || []).slice(0, 3).forEach((m) => toast(m, 'error', 5000));
   }
 
   /* ---------------------------------------------------------- panel layout */
 
+  // Panel height = the body the user sized plus the fixed chrome above it: the
+  // panel's 1px top rule, the 6px drag grip and the 34px tab bar.
+  const PANEL_CHROME = 41;
+
+  /**
+   * The page's own height, used to size the log panel. Falls back to the window
+   * while the view is still detached and has no box yet.
+   */
+  function pageHeight() {
+    const h = el.getBoundingClientRect().height;
+    return h > 80 ? h : window.innerHeight;
+  }
+
+  /**
+   * Default log-panel body: half the page.
+   *
+   * The panel is a peer of the queue, not a footnote under it -- you read a
+   * command or a log line by looking at it, not by scrolling a slot. The number
+   * is worked out from the page because a pixel default cannot be half of a
+   * window it has never seen.
+   */
+  function panelAuto() {
+    return Math.max(160, Math.round(pageHeight() * 0.5) - PANEL_CHROME);
+  }
+
+  /** Ceiling: three quarters of the page, so the queue always keeps a quarter. */
+  function panelCap() {
+    return Math.max(160, Math.round(pageHeight() * 0.75) - PANEL_CHROME);
+  }
+
   function applyPanel() {
-    const h = local.collapsed ? 0 : Math.max(120, ctx.state.settings.logPanelHeight || 220);
-    panelEl.style.height = local.collapsed ? '36px' : `${h + 34}px`;
+    // The stored pixel value only counts once it came from the grip. Otherwise a
+    // height carried over from another window size would decide the layout here.
+    const sized = !!ctx.state.settings.logPanelSized;
+    const want = sized ? Math.max(120, ctx.state.settings.logPanelHeight || 0) : panelAuto();
+    const h = local.collapsed ? 0 : Math.min(panelCap(), want);
+    panelEl.style.height = local.collapsed ? '36px' : `${h + PANEL_CHROME}px`;
     el.querySelector('[data-role=panel-hint]').textContent = local.collapsed ? '' : hintForTab();
     const btn = el.querySelector('[data-act=panel-toggle]');
-    btn.innerHTML = icon(local.collapsed ? 'chevronDown' : 'remove');
-    btn.style.transform = local.collapsed ? 'rotate(-90deg)' : '';
+    // One chevron, flipped. It used to ask for icon('remove'), which does not
+    // exist -- icon() handed back an empty path and the button sat there blank
+    // until the pointer happened to land on it.
+    btn.innerHTML = icon('chevronDown', 'sm');
+    btn.style.transform = local.collapsed ? 'rotate(180deg)' : '';
     gripEl.style.display = local.collapsed ? 'none' : '';
+    copyCmdBtn.hidden = local.tab !== 'command' || local.collapsed;
   }
 
   function hintForTab() {
     const job = currentJob();
+    // The command preview names the file in the command itself, so repeating it
+    // here only pushed 复制 further from the corner it belongs in.
+    if (local.tab === 'command') return '';
     if (!job) return local.tab === 'log' ? '' : '未选择任务';
     if (local.tab === 'log') return `${job.inputName} · ${job.logLineCount || 0} 行`;
-    if (local.tab === 'command') return `${job.inputName}`;
     return `${job.inputName} · ${statusMeta(job.status).label}`;
   }
 
@@ -483,6 +415,10 @@ export function createTasksView(ctx) {
     logEl.hidden = local.tab !== 'log';
     detailsEl.hidden = local.tab !== 'running';
     commandEl.hidden = local.tab !== 'command';
+    // 复制 belongs to the head, not to a row of its own above the command: a
+    // bar holding nothing but a small button read as a blank first line that
+    // the preview was mysteriously indenting around.
+    copyCmdBtn.hidden = local.tab !== 'command' || local.collapsed;
     el.querySelector('[data-role=panel-hint]').textContent = local.collapsed ? '' : hintForTab();
     if (local.tab === 'running') renderDetails();
   }
@@ -499,8 +435,16 @@ export function createTasksView(ctx) {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
       document.body.style.cursor = '';
-      const h = Math.round(panelEl.getBoundingClientRect().height) - 34;
-      ctx.state.settings = { ...ctx.state.settings, logPanelHeight: h, showLogPanel: true };
+      // Same ceiling as applyPanel, or a drag past it would be saved and then
+      // silently snap back on the next render. Dragging also flips the height
+      // from "half the page" to a number the user actually chose.
+      const h = Math.min(panelCap(), Math.round(panelEl.getBoundingClientRect().height) - PANEL_CHROME);
+      ctx.state.settings = {
+        ...ctx.state.settings,
+        logPanelHeight: h,
+        logPanelSized: true,
+        showLogPanel: true,
+      };
       await ctx.api.saveSettings(ctx.state.settings);
     };
     document.addEventListener('mousemove', move);
@@ -525,38 +469,54 @@ export function createTasksView(ctx) {
     failChip.hidden = bad === 0;
     failChip.textContent = `失败 ${bad}`;
 
-    // The filter rules now belong to the template, so the chip has to describe the
-    // rules that will actually apply to this queue. The queue-level panel outranks
-    // them, and the chip has to say so -- otherwise a tightened batch filter would
-    // look like it had been ignored.
-    const qf = local.qfilter;
-    const tpl = currentTemplate();
-    const f = qf && filterActive(qf) ? qf : (tpl && tpl.filter) || {};
-    const fromQueue = !!(qf && filterActive(qf));
+    // The filter rules live on the template (or on the global one, for a template
+    // that follows it), so the chip describes whatever this queue is bound to right
+    // now. Switching templates has to update it, hence renderToolbar on change.
+    //
+    // Wording: these bounds say what gets EXCLUDED, not what gets processed. The old
+    // phrasing ("小于 100MB") read as a description of the kept files, so a
+    // minSizeMB of 100 looked like "process everything from 100MB up" -- the exact
+    // opposite of what it does. Naming the excluded side removes the ambiguity.
+    const f = (currentTemplate() && currentTemplate().filter) || {};
     const parts = [];
-    if (f.minSizeMB > 0) parts.push(`小于 ${num(f.minSizeMB, 0)}MB`);
-    if (f.maxSizeMB > 0) parts.push(`大于 ${num(f.maxSizeMB, 0)}MB`);
-    if (f.minLongEdge > 0) parts.push(`长边小于 ${num(f.minLongEdge, 0)}`);
-    if (f.maxLongEdge > 0) parts.push(`长边大于 ${num(f.maxLongEdge, 0)}`);
-    if (f.minDuration > 0) parts.push(`时长小于 ${num(f.minDuration, 0)}s`);
-    if (f.maxDuration > 0) parts.push(`时长大于 ${num(f.maxDuration, 0)}s`);
+    const n = (v) => num(v, 0);
+    if (f.minSizeMB > 0) parts.push(`排除 <${n(f.minSizeMB)}MB`);
+    if (f.maxSizeMB > 0) parts.push(`排除 >${n(f.maxSizeMB)}MB`);
+    if (f.minLongEdge > 0) parts.push(`排除长边 <${n(f.minLongEdge)}`);
+    if (f.maxLongEdge > 0) parts.push(`排除长边 >${n(f.maxLongEdge)}`);
+    if (f.minDuration > 0) parts.push(`排除时长 <${n(f.minDuration)}s`);
+    if (f.maxDuration > 0) parts.push(`排除时长 >${n(f.maxDuration)}s`);
     if (f.includeExts?.length) parts.push(`仅 ${f.includeExts.join('/')}`);
     if (f.excludeExts?.length) parts.push(`排除 ${f.excludeExts.join('/')}`);
     const tag = el.querySelector('[data-role=filter-text]');
     if (parts.length) {
-      const act = f.action === 'move' ? '移动到' : f.action === 'copy' ? '复制到' : '仅标记';
-      tag.textContent = (fromQueue ? '本批次 · ' : '') + parts.join(' · ')
+      const act = f.action === 'move' ? '移动到' : f.action === 'copy' ? '复制到' : '留在原处';
+      tag.textContent = parts.join(' · ')
         + (f.action && f.action !== 'keep' ? ` → ${act}` : '');
     } else {
-      tag.textContent = fromQueue ? '本批次 · 不筛选' : '未启用过滤';
+      tag.textContent = '未启用匹配条件';
     }
     el.querySelector('[data-role=stat-filter]').classList.toggle('chip--accent', parts.length > 0);
 
     const running = (s.running || 0) > 0;
+    // Three distinct states, not two: a queue nobody has started must not wear the
+    // 「暂停」label, because 暂停 on a queue that never began is a no-op the user
+    // cannot tell from a broken button. It also stays disabled until there is
+    // something to pause.
+    const started = s.started !== false;
+    const startBtn = el.querySelector('[data-act=start]');
     const pauseBtn = el.querySelector('[data-act=pause]');
-    pauseBtn.innerHTML = s.paused ? `${icon('play')}继续` : `${icon('pause')}暂停`;
-    pauseBtn.classList.toggle('btn--tonal', !!s.paused);
-    el.querySelector('[data-act=start]').disabled = s.paused === false && running && (s.pending || 0) === 0;
+    if (!started) {
+      pauseBtn.innerHTML = `${icon('pause')}暂停`;
+      pauseBtn.disabled = true;
+      pauseBtn.classList.remove('btn--tonal');
+    } else {
+      pauseBtn.innerHTML = s.paused ? `${icon('play')}继续` : `${icon('pause')}暂停`;
+      pauseBtn.disabled = false;
+      pauseBtn.classList.toggle('btn--tonal', !!s.paused);
+    }
+    // 开始 is the only way in, so it stays available while jobs are waiting.
+    startBtn.disabled = started && running && (s.pending || 0) === 0;
   }
 
   /**
@@ -572,7 +532,14 @@ export function createTasksView(ctx) {
     const width = doneish ? 100 : Math.round((job.progress || 0) * 100);
 
     let left = '';
-    if (job.status === 'running') {
+    if (job.frozen) {
+      // No throughput while the process is suspended: ffmpeg is not reading
+      // anything, so the last reported speed describes work that is not happening.
+      // Saying so is also what stops a stopped bar from reading as a hang. The
+      // percentage is deliberately left out -- the right-hand column already shows
+      // it, and saying it twice reads as a rendering bug.
+      left = '已暂停，进度保留';
+    } else if (job.status === 'running') {
       const bits = [];
       if (job.speed > 0) bits.push(`${num(job.speed, 1)}x`);
       if (job.bitrate) bits.push(`${esc(job.bitrate)} kbps`);
@@ -659,7 +626,7 @@ export function createTasksView(ctx) {
   }
 
   function rowHtml(job) {
-    const cls = [local.checked.has(job.id) ? 'is-checked' : '', job.status === 'running' ? 'is-running' : ''].join(' ');
+    const cls = [local.checked.has(job.id) ? 'is-checked' : '', job.status === 'running' && !job.frozen ? 'is-running' : ''].join(' ');
     const [res, dur, size] = measureCells(job);
     return `<tr data-id="${esc(job.id)}" class="${cls}">
       <td class="col-check"><label class="check"><input type="checkbox"${local.checked.has(job.id) ? ' checked' : ''}></label></td>
@@ -674,7 +641,7 @@ export function createTasksView(ctx) {
       <td class="num">${res}</td>
       <td class="num">${dur}</td>
       <td class="num">${size}</td>
-      <td>${statusChip(job.status)}</td>
+      <td>${statusChip(job.status, job.frozen)}</td>
       <td>${progressCell(job)}</td>
       <td class="actions">
         ${job.status === 'done' || job.status === 'warning'
@@ -720,9 +687,9 @@ export function createTasksView(ctx) {
     cells[2].innerHTML = res;
     cells[3].innerHTML = dur;
     cells[4].innerHTML = size;
-    cells[5].innerHTML = statusChip(job.status);
+    cells[5].innerHTML = statusChip(job.status, job.frozen);
     cells[6].innerHTML = progressCell(job);
-    row.classList.toggle('is-running', job.status === 'running');
+    row.classList.toggle('is-running', job.status === 'running' && !job.frozen);
     if (job.status !== 'running') { renderToolbar(); return true; }
     return true;
   }
@@ -766,9 +733,9 @@ export function createTasksView(ctx) {
       <div class="detail-card">
         <h4>实时状态</h4>
         <dl class="kv">
-          <dt>状态</dt><dd>${esc(statusMeta(job.status).label)}</dd>
+          <dt>状态</dt><dd>${esc(statusLabel(job.status, job.frozen))}</dd>
           <dt>进度</dt><dd>${esc(live ? pct(job.progress) : job.status === 'done' || job.status === 'warning' ? '100%' : '—')}</dd>
-          <dt>速度</dt><dd>${job.speed ? `${num(job.speed, 2)}x` : '—'}</dd>
+          <dt>速度</dt><dd>${job.speed && !job.frozen ? `${num(job.speed, 2)}x` : '—'}</dd>
           <dt>码率</dt><dd>${esc(job.bitrate ? `${job.bitrate} kbps` : '—')}</dd>
           <dt>已处理</dt><dd>${job.outTimeMs ? esc(humanDuration(job.outTimeMs / 1000)) : '—'}</dd>
           <dt>帧</dt><dd>${job.frame ? `${job.frame}${job.fps ? ` @ ${num(job.fps, 1)}` : ''}` : '—'}</dd>
@@ -844,70 +811,35 @@ export function createTasksView(ctx) {
 
   /* ---------------------------------------------------------------- command */
 
+  /**
+   * The command preview for the selected job.
+   *
+   * Built from the template *this job is bound to* -- which, now that the
+   * toolbar applies to the whole queue, is the toolbar's template too. The one
+   * case where they differ is a job already on the CPU: it keeps whatever it
+   * started with. Nothing is said about it in the panel: the command is simply
+   * the one that ran / is running, and a note explaining which template it came
+   * from was read as "something is wrong" even when nothing was.
+   */
   async function refreshCommand() {
     const job = currentJob();
     if (!job) {
+      local.lastCommand = '';
+      copyCmdBtn.disabled = true;
       commandTextEl.innerHTML = '<div class="cmd"><div class="cmd__line"><span class="cmd__val">选择一条任务查看它的 ffmpeg 命令</span></div></div>';
       return;
     }
     const tplId = job.templateId || ctx.state.currentTemplateId;
     try {
       const plan = await ctx.api.previewCommand(tplId, job.input);
+      local.lastCommand = plan.command || '';
+      copyCmdBtn.disabled = !local.lastCommand;
       commandTextEl.innerHTML = commandHtml(plan.bin, plan.args, '（无）');
     } catch (err) {
+      local.lastCommand = '';
+      copyCmdBtn.disabled = true;
       commandTextEl.innerHTML = `<div class="cmd"><div class="cmd__line"><span class="cmd__val">${esc(`无法生成命令：${err.message || err}`)}</span></div></div>`;
     }
-  }
-
-  async function showCommandPreview() {
-    const jobs = ctx.state.jobs.filter((j) => !['done', 'warning', 'failed', 'filtered', 'skipped'].includes(j.status));
-    let items = [];
-    let warning = '';
-    try {
-      items = await ctx.api.previewQueue(tplSelect.value);
-    } catch (e) {
-      warning = e.message || String(e);
-    }
-    const body = `
-      <div style="padding:12px 16px 0">
-        <div class="row" style="gap:8px;margin-bottom:10px">
-          <span class="chip chip--accent">${icon('layers')}${esc(tplSelect.selectedOptions[0]?.textContent || '当前模板')}</span>
-          <span class="chip chip--muted">${items.length || jobs.length} 个待处理任务</span>
-          <div class="spacer"></div>
-          <span class="hint">命令随源文件分辨率实时变化，这里按当前队列逐条生成</span>
-        </div>
-        ${warning ? `<div class="chip chip--err" style="margin-bottom:10px">${esc(warning)}</div>` : ''}
-      </div>
-      <div class="scroll-y" style="padding:0 16px 16px;display:flex;flex-direction:column;gap:10px">
-        ${(items.length ? items : jobs.map((j) => ({ jobId: j.id, input: j.input, output: j.output, bin: '', args: [], command: '', notes: [] })))
-          .map((it, i) => `
-          <div class="card" style="overflow:hidden">
-            <div class="row" style="padding:8px 12px;border-bottom:1px solid var(--outline);gap:8px">
-              <span class="badge">${i + 1}</span>
-              <span class="nowrap" style="flex:1;font-size:12.5px" title="${esc(it.input)}">${esc(it.input)}</span>
-              <button class="btn btn--text btn--sm" data-copy="${i}">${icon('copy', 'sm')}复制</button>
-            </div>
-            <div class="code-block" style="max-height:320px;padding:0">${commandHtml(it.bin, it.args, '（无法生成）')}</div>
-            ${(it.notes || []).length ? `<div style="padding:0 12px 10px">${it.notes.map((n) => `<div class="chip chip--warn" style="margin:3px 4px 0 0">${esc(n)}</div>`).join('')}</div>` : ''}
-          </div>`).join('')}
-      </div>`;
-    const { modal } = openModal({
-      title: '命令预览',
-      size: 'modal--wide',
-      body,
-      footer: `<span class="hint">共 ${items.length} 条命令</span><div class="spacer"></div>
-        <button class="btn btn--tonal" data-copy-all>${icon('copy')}复制全部</button>
-        <button class="btn btn--text" data-close2>关闭</button>`,
-    });
-    const all = items.map((it) => it.command).filter(Boolean).join('\n\n');
-    modal.querySelector('[data-copy-all]').addEventListener('click', async () => {
-      toast((await copyText(all)) ? '已复制全部命令' : '复制失败', 'success');
-    });
-    modal.querySelector('[data-close2]')?.addEventListener('click', closeModal);
-    modal.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
-      const it = items[Number(b.dataset.copy)];
-      toast((await copyText(it.command)) ? '命令已复制' : '复制失败', 'success', 1600);
-    }));
   }
 
   /* ------------------------------------------------------------------ mount */
@@ -920,13 +852,11 @@ export function createTasksView(ctx) {
     el,
     mount() {
       syncTemplateOptions();
-      // Restore the queue filter only when it was left switched on. Reloading the
-      // page should not silently re-apply rules the user had turned off.
-      if (ctx.state.settings?.queueFilterSet && ctx.state.settings?.queueFilter) {
-        local.qfilter = { ...ctx.state.settings.queueFilter };
-      }
-      renderQueueFilter();
       renderJobs();
+      // Again now that the page has a box: at construction time el is detached
+      // and panelAuto() had to fall back to the window height, which is a
+      // titlebar taller than the page actually is.
+      applyPanel();
       if (ctx.state.selectedJobId) loadLog(ctx.state.selectedJobId);
     },
     onTemplatesChanged() { syncTemplateOptions(); },

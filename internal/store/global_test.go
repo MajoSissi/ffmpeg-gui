@@ -1,9 +1,7 @@
 package store
 
 import (
-	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -19,11 +17,10 @@ func TestEffectiveInheritsOutputFieldByField(t *testing.T) {
 	g.OutDir = filepath.Join("D:", "Media")
 	g.OutSuffix = "_done"
 	g.OutPattern = "{name}_x"
-	g.OutConflict = ConflictSkip
 
 	eff := Template{OutputOverride: true}.Effective(g)
 	if eff.OutMode != OutputMirror || eff.OutDir != g.OutDir ||
-		eff.OutSuffix != "_done" || eff.OutPattern != "{name}_x" || eff.OutConflict != ConflictSkip {
+		eff.OutSuffix != "_done" || eff.OutPattern != "{name}_x" {
 		t.Fatalf("blank template did not inherit: %+v", eff)
 	}
 
@@ -59,44 +56,29 @@ func TestEffectiveFollowerIgnoresOwnOutputValues(t *testing.T) {
 	}
 }
 
-// Files written before the switch existed carry output values but no flag. They must
-// keep behaving the way they did instead of silently reverting to the global rules.
-func TestNormalizeAdoptsPreSwitchOutputValues(t *testing.T) {
-	legacy := Template{Name: "旧模板", OutMode: OutputSame, OutSuffix: "_old"}
-	legacy.Normalize()
-	if !legacy.OutputOverride {
-		t.Error("a template with its own output values must be treated as overriding them")
-	}
-	if !legacy.OverridesOutput() {
-		t.Error("OverridesOutput must agree with the adopted flag")
-	}
-
-	// A genuinely blank template stays a follower.
-	blank := Template{Name: "空白"}
-	blank.Normalize()
-	if blank.OutputOverride {
-		t.Error("a template with no output values must stay a follower")
-	}
-}
-
-// The three sections are inherited whole, not field by field. A nil section is
+// The four sections are inherited whole, not field by field. A nil section is
 // the "follow the global" marker and must stay distinguishable from an empty one.
 func TestEffectiveInheritsSectionsWhole(t *testing.T) {
 	g := DefaultGlobalTemplate()
 	g.Perf.Concurrency = 4
 	g.Filter.MinSizeMB = 300
 	g.Problems.ErrorAction = ActionMove
+	g.Existing = &ExistingSpec{Action: ActionMove}
 
-	// A follower: all three nil.
+	// A follower: all four nil.
 	follower := Template{Name: "跟随全局"}.Effective(g)
-	if follower.Perf != g.Perf || follower.Filter != g.Filter || follower.Problems != g.Problems {
+	if follower.Perf != g.Perf || follower.Filter != g.Filter ||
+		follower.Problems != g.Problems || follower.Existing != g.Existing {
 		t.Error("expected the sections to be taken from the global template")
 	}
 	if follower.Perf.Concurrency != 4 || follower.Filter.MinSizeMB != 300 {
 		t.Errorf("inherited values wrong: %+v %+v", follower.Perf, follower.Filter)
 	}
+	if follower.Existing.Action != ActionMove {
+		t.Errorf("the existing-file policy was not inherited: %+v", follower.Existing)
+	}
 
-	// An overrider: only Perf is replaced, the other two follow.
+	// An overrider: only Perf is replaced, the rest follow.
 	own := &PerfSpec{Concurrency: 1, LogLevel: "info"}
 	partial := Template{Perf: own}.Effective(g)
 	if partial.Perf != own {
@@ -120,11 +102,32 @@ func TestEffectiveInheritsSectionsWhole(t *testing.T) {
 func TestNormalizeKeepsNilSectionsNil(t *testing.T) {
 	tpl := Template{Name: "x"}
 	tpl.Normalize()
-	if tpl.Perf != nil || tpl.Filter != nil || tpl.Problems != nil {
+	if tpl.Perf != nil || tpl.Filter != nil || tpl.Problems != nil || tpl.Existing != nil {
 		t.Error("Normalize materialised a section that was meant to follow the global one")
 	}
 	if tpl.OutMode != "" {
 		t.Errorf("Normalize filled an output mode: %q", tpl.OutMode)
+	}
+}
+
+// An action the engine does not know must not survive into the file: it would
+// reach handleProcessed, match neither move nor copy, and silently behave as
+// 「留在原处」 -- the user would think a rule is doing something when it is not.
+func TestNormalizeRejectsUnknownExistingAction(t *testing.T) {
+	for _, bad := range []string{"delete-everything", "overwrite", "skip", "rename"} {
+		tpl := Template{Existing: &ExistingSpec{Action: bad}}
+		tpl.Normalize()
+		if tpl.Existing.Action != "" {
+			t.Errorf("%q survived normalisation: %q", bad, tpl.Existing.Action)
+		}
+	}
+	// The three real ones are untouched.
+	for _, ok := range []string{"", ActionMove, ActionCopy} {
+		tpl := Template{Existing: &ExistingSpec{Action: ok}}
+		tpl.Normalize()
+		if tpl.Existing.Action != ok {
+			t.Errorf("%q was rewritten to %q", ok, tpl.Existing.Action)
+		}
 	}
 }
 
@@ -133,7 +136,7 @@ func TestNormalizeKeepsNilSectionsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnsureGlobalCreatesAndPins(t *testing.T) {
-	list, changed := EnsureGlobal(nil, nil)
+	list, changed := EnsureGlobal(nil)
 	if !changed || len(list) != 1 {
 		t.Fatalf("expected a single created global template, got %d (changed=%v)", len(list), changed)
 	}
@@ -143,99 +146,13 @@ func TestEnsureGlobalCreatesAndPins(t *testing.T) {
 
 	// A list that already has it somewhere else gets it moved to the front.
 	list = []Template{{ID: "a", Name: "A"}, {ID: GlobalTemplateID, Name: GlobalTemplateName, Global: true}}
-	list, changed = EnsureGlobal(list, nil)
+	list, changed = EnsureGlobal(list)
 	if !changed || list[0].ID != GlobalTemplateID {
 		t.Fatalf("global template was not pinned first: %+v", list)
 	}
 	// Idempotent: a second pass must report no change so the file is not rewritten.
-	if _, changed := EnsureGlobal(list, nil); changed {
+	if _, changed := EnsureGlobal(list); changed {
 		t.Error("EnsureGlobal is not idempotent")
-	}
-}
-
-// A settings file that predates the global template must land its old values in
-// the new global template rather than being dropped.
-func TestNewGlobalFromLegacyMovesOutputRules(t *testing.T) {
-	s := DefaultSettings()
-	s.LegacyOutputDirMode = OutputMirror
-	s.LegacyOutputDir = filepath.Join("D:", "Media", "out")
-	s.LegacyNamePattern = "{name}.{ext}"
-	s.LegacyConflict = ConflictSkip
-	s.LegacyConcurrency = 3
-	s.LegacyRetryCount = 2
-	s.LegacyFilters = &LegacyFilterRules{
-		MinSizeMB: 300, Action: ActionMove,
-		TargetDir: filepath.Join("D:", "small"),
-	}
-	s.LegacyOnErrorDir = filepath.Join("D:", "bad")
-
-	g, moved := NewGlobalFromLegacy(s)
-	if !moved {
-		t.Fatal("expected the legacy values to be reported as moved")
-	}
-	if g.OutMode != OutputMirror || g.OutDir != s.LegacyOutputDir ||
-		g.OutPattern != "{name}.{ext}" || g.OutConflict != ConflictSkip {
-		t.Errorf("output rules not migrated: %+v", g)
-	}
-	if g.Perf.Concurrency != 3 || g.Perf.RetryCount != 2 {
-		t.Errorf("performance not migrated: %+v", g.Perf)
-	}
-	if g.Filter.MinSizeMB != 300 || g.Filter.Action != ActionMove {
-		t.Errorf("filter not migrated: %+v", g.Filter)
-	}
-	// The old implementation always mirrored the tree for problem files, so the
-	// migration must not quietly change where those files land.
-	if g.Problems.ErrorDest.Mode != OutputMirror || g.Problems.ErrorDest.Dir != s.LegacyOnErrorDir {
-		t.Errorf("problem destination not migrated: %+v", g.Problems)
-	}
-
-	// After clearing, nothing is left to migrate and the fields disappear from
-	// the JSON entirely.
-	s.ClearLegacy()
-	if s.HasLegacy() {
-		t.Error("ClearLegacy left something behind")
-	}
-	if _, moved := NewGlobalFromLegacy(s); moved {
-		t.Error("a cleared settings file must not report a migration")
-	}
-	raw, _ := json.Marshal(s)
-	for _, key := range []string{`"concurrency"`, `"outputDirMode"`, `"filters"`, `"onErrorDir"`} {
-		if strings.Contains(string(raw), key) {
-			t.Errorf("%s still present in settings.json: %s", key, raw)
-		}
-	}
-}
-
-// The old settings.json keys must still parse, otherwise the migration could
-// never run: the fields are flat with omitempty precisely so they can be read
-// once and then disappear.
-func TestLegacyFieldsParseFromOldJSON(t *testing.T) {
-	raw := []byte(`{
-		"outputDirMode":"custom","outputDir":"D:/Media","outputSuffix":"_o",
-		"namePattern":"{name}","conflict":"skip",
-		"concurrency":4,"logLevel":"info","retryCount":1,"deleteOnFail":true,
-		"filters":{"minSizeMB":300,"maxSizeMB":9000,"action":"move","targetDir":"D:/small","renamePattern":"x_{name}.{ext}"},
-		"onErrorAction":"copy","onErrorDir":"D:/bad","onWarningAction":"mark"
-	}`)
-	var s Settings
-	if err := json.Unmarshal(raw, &s); err != nil {
-		t.Fatalf("old settings.json no longer parses: %v", err)
-	}
-	if !s.HasLegacy() {
-		t.Fatal("HasLegacy did not notice the old keys")
-	}
-	g, moved := NewGlobalFromLegacy(s)
-	if !moved {
-		t.Fatal("expected a migration")
-	}
-	if g.OutDir != "D:/Media" || g.Perf.Concurrency != 4 || !g.Perf.DeleteOnFail {
-		t.Errorf("migration lost values: %+v %+v", g, g.Perf)
-	}
-	if g.Filter.MaxSizeMB != 9000 || g.Filter.RenamePattern != "x_{name}.{ext}" {
-		t.Errorf("filter migration incomplete: %+v", g.Filter)
-	}
-	if g.Problems.WarningAction != ActionMark {
-		t.Errorf("warning action lost: %+v", g.Problems)
 	}
 }
 
@@ -250,15 +167,23 @@ func TestNewFromGlobalIsDeepCopied(t *testing.T) {
 	g.Perf.Concurrency = 8
 	g.Filter.IncludeExts = []string{"mp4"}
 	g.Problems.ErrorAction = ActionMove
+	// The global ships without this section (see
+	// TestDefaultGlobalHasNoExistingSection), so set one up to prove the copy.
+	g.Existing = &ExistingSpec{Action: ActionMove, Dest: DestRule{Mode: OutputCustom, Dir: filepath.Join("D:", "done")}}
 
 	n := NewFromGlobal(g)
-	if n.Perf == g.Perf || n.Filter == g.Filter || n.Problems == g.Problems {
+	if n.Perf == g.Perf || n.Filter == g.Filter || n.Problems == g.Problems ||
+		n.Existing == g.Existing {
 		t.Fatal("sections are shared with the global template")
 	}
 	n.Perf.Concurrency = 1
 	n.Filter.IncludeExts[0] = "mkv"
+	n.Existing.Dest.Dir = "D:/elsewhere"
 	if g.Perf.Concurrency != 8 || g.Filter.IncludeExts[0] != "mp4" {
 		t.Error("editing the new template reached back into the global one")
+	}
+	if g.Existing.Dest.Dir == "D:/elsewhere" {
+		t.Error("editing the new template's existing-file section reached back into the global one")
 	}
 	if n.OutMode != "" || n.OutputOverride {
 		// The output section now has its own switch, and a new template starts
@@ -383,4 +308,37 @@ func TestPerfSpecNormalizeClamps(t *testing.T) {
 	}
 	var nilSpec *PerfSpec
 	nilSpec.Normalize() // must not panic
+}
+
+// A new template copies the audio. Re-encoding it as well is the wrong default:
+// most jobs only want to touch the video, and it cannot improve the sound.
+func TestNewFromGlobalCopiesAudio(t *testing.T) {
+	n := NewFromGlobal(DefaultGlobalTemplate())
+	if n.AudioMode != ModeCopy {
+		t.Errorf("AudioMode = %q, want %q", n.AudioMode, ModeCopy)
+	}
+}
+
+// The scale algorithm stays empty when the user picked 默认. Filling lanczos in
+// would add :flags=lanczos to the command of a template that never asked for it.
+func TestNormalizeKeepsUnsetScaleAlgorithm(t *testing.T) {
+	tpl := Template{Resize: ResizeSpec{Mode: ResizeLongEdge, LongEdge: 2560}}
+	tpl.Normalize()
+	if tpl.Resize.Algorithm != "" {
+		t.Errorf("Algorithm = %q, want empty (ffmpeg default)", tpl.Resize.Algorithm)
+	}
+}
+
+// The 「已处理过的源文件」 section skips an already-processed file whenever it is
+// present, so shipping one in the global template would silently give every
+// template "never process the same file twice". nil is the off state.
+func TestDefaultGlobalHasNoExistingSection(t *testing.T) {
+	if got := DefaultGlobalTemplate().Existing; got != nil {
+		t.Errorf("the global template enables the section by default: %+v", got)
+	}
+	// A template that opens the section is what opts in.
+	eff := Template{Existing: &ExistingSpec{Action: ActionMove}}.Effective(DefaultGlobalTemplate())
+	if eff.Existing == nil || eff.Existing.Action != ActionMove {
+		t.Errorf("an explicit section must survive Effective: %+v", eff.Existing)
+	}
 }

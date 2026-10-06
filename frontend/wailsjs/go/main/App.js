@@ -118,8 +118,8 @@ export function PreviewCommand(arg1, arg2) {
   return window['go']['main']['App']['PreviewCommand'](arg1, arg2);
 }
 
-export function PreviewQueue(arg1) {
-  return window['go']['main']['App']['PreviewQueue'](arg1);
+export function PreviewTemplate(arg1, arg2) {
+  return window['go']['main']['App']['PreviewTemplate'](arg1, arg2);
 }
 
 export function Probe(arg1) {
@@ -184,10 +184,6 @@ export function SetAllTemplates(arg1) {
 
 export function SetJobTemplate(arg1, arg2) {
   return window['go']['main']['App']['SetJobTemplate'](arg1, arg2);
-}
-
-export function SetQueueFilter(arg1) {
-  return window['go']['main']['App']['SetQueueFilter'](arg1);
 }
 
 export function Settings() {

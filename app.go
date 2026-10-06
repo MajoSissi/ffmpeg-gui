@@ -64,16 +64,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.mu.Lock()
 	a.settings = store.LoadSettings()
-	// Templates that predate the global template carry their defaults in
-	// settings.json; move them across once, then clear the source so the next
-	// save does not resurrect it.
-	a.templates = store.LoadTemplates(func() (store.Template, bool) {
-		return store.NewGlobalFromLegacy(a.settings)
-	})
-	if a.settings.HasLegacy() {
-		a.settings.ClearLegacy()
-		_ = store.SaveSettings(a.settings)
-	}
+	a.templates = store.LoadTemplates()
 	a.refreshBinariesLocked()
 	logCfg := a.settings
 	a.mu.Unlock()
@@ -416,6 +407,7 @@ func (a *App) DuplicateTemplate(id string) (store.Template, error) {
 	// The section pointers would be shared with the source; copy them so editing
 	// the duplicate cannot rewrite the original.
 	src.Perf = store.ClonePerf(src.Perf)
+	src.Existing = store.CloneExisting(src.Existing)
 	src.Filter = store.CloneFilter(src.Filter)
 	src.Problems = store.CloneProblems(src.Problems)
 
@@ -701,17 +693,28 @@ func (a *App) enqueue(paths []string, forceDir, recursive bool) AddResult {
 	}
 
 	a.mu.RLock()
+	// A job must be bound to a template that can actually process a file. The
+	// global template is pinned first in the list but holds defaults only, so
+	// picking "the first one" as a fallback would hand every newly added file a
+	// template that cannot run -- and the queue would then claim it was bound to
+	// 「全局模板」 while the toolbar showed something else entirely.
 	tplID := a.settings.LastTemplateID
 	tplName := ""
 	for _, t := range a.templates {
-		if t.ID == tplID {
+		if t.ID == tplID && !t.Global {
 			tplName = t.Name
 			break
 		}
 	}
-	if tplName == "" && len(a.templates) > 0 {
-		tplID = a.templates[0].ID
-		tplName = a.templates[0].Name
+	if tplName == "" {
+		tplID = ""
+		for _, t := range a.templates {
+			if !t.Global {
+				tplID = t.ID
+				tplName = t.Name
+				break
+			}
+		}
 	}
 	a.mu.RUnlock()
 
@@ -743,11 +746,12 @@ func (a *App) SetJobTemplate(jobID, templateID string) error {
 	return fmt.Errorf("任务不存在")
 }
 
-// SetAllTemplates re-points every queued job at another template.
-func (a *App) SetAllTemplates(templateID string) int {
+// SetAllTemplates re-points the whole queue at another template and reports how
+// many rows moved. Finished rows are re-queued, hence the second counter.
+func (a *App) SetAllTemplates(templateID string) engine.ApplyResult {
 	t, ok := a.templateByID(templateID)
 	if !ok {
-		return 0
+		return engine.ApplyResult{}
 	}
 	return a.runner.UpdateAllTemplates(t.ID, t.Name)
 }
@@ -775,18 +779,6 @@ func (a *App) RemoveJob(id string) error { return a.runner.RemoveJob(id) }
 
 // RemoveJobs drops every job in ids and returns how many were actually removed.
 func (a *App) RemoveJobs(ids []string) int { return a.runner.RemoveJobs(ids) }
-
-// SetQueueFilter installs the queue-level filter override, which outranks the
-// template's own rules. Pass nil to hand filtering back to the template.
-func (a *App) SetQueueFilter(f *store.FilterSpec) {
-	a.runner.SetQueueFilter(f)
-	s := a.Settings()
-	s.QueueFilter = f
-	if f != nil {
-		s.QueueFilterSet = true
-	}
-	a.SaveSettings(s)
-}
 
 // RemoveFinished clears every completed job.
 func (a *App) RemoveFinished() int { return a.runner.ClearFinished() }
@@ -823,7 +815,7 @@ const (
 	outputVar = "{输出}"
 )
 
-// PreviewCommand renders the ffmpeg command a template would produce.
+// PreviewCommand renders the ffmpeg command a stored template would produce.
 //
 // Given a real inputPath the whole command resolves, output path included.
 // Without one the two runtime values stay as {输入} / {输出}; everything else is
@@ -834,6 +826,19 @@ func (a *App) PreviewCommand(templateID, inputPath string) (*engine.Plan, error)
 	if !ok {
 		return nil, fmt.Errorf("模板不存在")
 	}
+	return a.buildPreview(t, inputPath)
+}
+
+// PreviewTemplate renders the command for a template the editor hands over
+// wholesale. PreviewCommand looks its template up by id, so it can only show the
+// *saved* copy -- an editor that called it while claiming
+// "未保存的修改也会体现在这里" was lying. This is the entry point that makes the
+// preview follow the draft on screen instead.
+func (a *App) PreviewTemplate(t store.Template, inputPath string) (*engine.Plan, error) {
+	return a.buildPreview(t, inputPath)
+}
+
+func (a *App) buildPreview(t store.Template, inputPath string) (*engine.Plan, error) {
 	s := a.Settings()
 	b := a.Binaries()
 	// Resolve against the merged template so the preview shows the values that
@@ -842,6 +847,7 @@ func (a *App) PreviewCommand(templateID, inputPath string) (*engine.Plan, error)
 
 	var info *media.Info
 	fromFile := false
+	standIn := false
 	if strings.TrimSpace(inputPath) != "" && fileExists(inputPath) {
 		if p, err := a.Probe(inputPath); err == nil {
 			info, fromFile = p, true
@@ -853,21 +859,54 @@ func (a *App) PreviewCommand(templateID, inputPath string) (*engine.Plan, error)
 		info = sampleInfo()
 		info.Path = inputVar
 		info.FileName = inputVar
+		// Never substitute silently. A stand-in produces a perfectly plausible
+		// command whose numbers have nothing to do with the real file, which is
+		// exactly how one panel comes to disagree with another and neither looks
+		// wrong.
+		standIn = true
 	}
 
+	// The output path goes through ResolveOutput either way. A stand-in used to
+	// skip it and print a bare {输出}, which meant the naming template and the
+	// output container were both invisible in the preview: "{name}" showed up with
+	// no extension at all, and the only way to see the real result was to spell
+	// the extension out in the pattern. The file name is real either way; only
+	// the directory depends on the actual input, so that is what gets folded back
+	// into a placeholder.
 	out := outputVar
-	if fromFile {
-		if dest, err := engine.ResolveOutput(engine.OutputRequest{
-			Info: info, Tpl: eff, SrcRoot: filepath.Dir(info.Path),
-		}); err == nil {
-			out = dest
-		}
+	if dest, err := engine.ResolveOutput(engine.OutputRequest{
+		Info: info, Tpl: eff, SrcRoot: filepath.Dir(info.Path),
+	}); err == nil {
+		out = dest
+	}
+	if !fromFile {
+		out = previewOutputName(out)
 	}
 
-	return engine.BuildPlan(engine.PlanInput{
+	plan, err := engine.BuildPlan(engine.PlanInput{
 		Info: info, Tpl: eff, Settings: s, Binaries: b, Output: out,
 		LogLevel: templateLogLevel(eff), Threads: templateThreads(eff),
 	})
+	if err != nil {
+		return nil, err
+	}
+	if standIn {
+		plan.Warnings = append(plan.Warnings,
+			"读不到源文件（可能已被移动或删除），这条命令按 3840×2160 的示例计算，分辨率相关参数不是真实值")
+	}
+	return plan, nil
+}
+
+// previewOutputName folds a stand-in's resolved output path back into something
+// readable: the file name is exactly what a real run would produce (naming template
+// applied, output container's extension appended), and the directory -- which only
+// exists because a sample path was made up -- goes back to a placeholder.
+func previewOutputName(dest string) string {
+	name := filepath.Base(dest)
+	if strings.TrimSpace(name) == "" || name == "." {
+		return outputVar
+	}
+	return outputVar + string(filepath.Separator) + name
 }
 
 // templateLogLevel reads the merged -loglevel, tolerating a follower whose
@@ -885,69 +924,6 @@ func templateThreads(t store.Template) int {
 		return 0
 	}
 	return t.Perf.Threads
-}
-
-// PreviewItem renders one queued job for the current template.
-type PreviewItem struct {
-	JobID   string   `json:"jobId"`
-	Input   string   `json:"input"`
-	Output  string   `json:"output"`
-	Bin     string   `json:"bin"`
-	Args    []string `json:"args"`
-	Command string   `json:"command"`
-	Notes   []string `json:"notes"`
-}
-
-// PreviewQueue builds the command preview for every queued job.
-func (a *App) PreviewQueue(templateID string) ([]PreviewItem, error) {
-	t, ok := a.templateByID(templateID)
-	if !ok {
-		return nil, fmt.Errorf("模板不存在")
-	}
-	s := a.Settings()
-	b := a.Binaries()
-	eff := t.Effective(a.GlobalTemplate())
-	logLevel := templateLogLevel(eff)
-
-	jobs := a.runner.Jobs()
-	items := make([]PreviewItem, 0, len(jobs))
-	for i, j := range jobs {
-		if j.Status.Finished() {
-			continue
-		}
-		info := j.InfoBefore
-		if info == nil {
-			info = sampleInfoFor(j.Input)
-		}
-		// Resolve the real destination so the queue preview shows where each
-		// file will actually land — that is the point of the sibling/suffix
-		// output rules, and a preview that hid it would be useless.
-		out := j.Output
-		if out == "" {
-			if dest, err := engine.ResolveOutput(engine.OutputRequest{
-				Info: info, Tpl: eff, SrcRoot: j.SourceRoot, Index: i,
-			}); err == nil {
-				out = dest
-			} else {
-				out = outputVar
-			}
-		}
-		plan, err := engine.BuildPlan(engine.PlanInput{
-			Info: info, Tpl: eff, Settings: s, Binaries: b, Output: out,
-			LogLevel: logLevel, Threads: templateThreads(eff),
-		})
-		item := PreviewItem{JobID: j.ID, Input: j.Input, Output: out}
-		if err != nil {
-			item.Notes = []string{err.Error()}
-		} else {
-			item.Bin = plan.Bin
-			item.Args = plan.Args
-			item.Command = plan.Command
-			item.Notes = plan.Warnings
-		}
-		items = append(items, item)
-	}
-	return items, nil
 }
 
 func sampleInfo() *media.Info {
@@ -1221,15 +1197,20 @@ type Options struct {
 	RateControls    []Option `json:"rateControls"`
 	PadColors       []Option `json:"padColors"`
 	OutputModes     []Option `json:"outputModes"`
-	// ConflictModes and ProblemActions are shared by the main output, the filter
-	// transfer and the error/warning policies, so they live in one place.
-	ConflictModes  []Option `json:"conflictModes"`
-	ProblemActions []Option `json:"problemActions"`
-	// FilterActions adds "keep" to the problem actions: excluded files can stay
-	// put without being moved anywhere.
-	FilterActions []Option `json:"filterActions"`
-	// DestModes is the four-way output rule every stage gets. The first entry is
-	// the "follow the global template" placeholder the editor shows.
+	// FilterActions is the shared 处理方式 list for the three sections that move a
+	// file somewhere: 已处理过的源文件, 被排除的文件 and the error / warning
+	// policies. They all read the same way on purpose -- a rule you learned in one
+	// place works in the other two.
+	//
+	// ProblemActions is FilterActions plus 「仅在结果中标记」, which only makes sense
+	// for a problem file: there is nothing to mark about a source you simply skip.
+	FilterActions   []Option `json:"filterActions"`
+	ProblemActions  []Option `json:"problemActions"`
+	ExistingActions []Option `json:"existingActions"`
+	// DestModes is the four-way output rule every stage gets. None of these lists
+	// carries a "follow the global template" entry: the section's 与全局不同 switch
+	// is the single way to say that, and offering both let a panel claim to follow
+	// while the command used something else.
 	DestModes []Option `json:"destModes"`
 }
 
@@ -1322,13 +1303,47 @@ func (a *App) emitToastKind(kind, msg string) {
 // Static option tables
 // ---------------------------------------------------------------------------
 
+// DefaultOptionLabel is what every dropdown calls the "not set" choice.
+//
+// The wording for "the user did not configure this" used to be invented per list:
+// "保持原样", "留空 = ffmpeg 默认", "0 = 自动", "默认（由 ffmpeg 决定）"... four
+// spellings for one idea, which reads as four different behaviours. One phrase
+// now covers all of them, in this vocabulary:
+//
+//   - dropdowns lead with DefaultOptionLabel
+//   - placeholders say "留空 = 默认"
+//   - numeric fields say "0 = 保持原样" or "0 = 不限", whichever is true
+const DefaultOptionLabel = "默认（由 ffmpeg 决定）"
+
+// DefaultPlaceholder is the placeholder counterpart of DefaultOptionLabel.
+const DefaultPlaceholder = "留空 = 默认"
+
+// destModes is the four-way output rule, shared by the main output and by every
+// section that relocates a file. One list rather than four near-copies: the four
+// reads alike on purpose, and a wording fix that misses one of them is a bug the
+// user has to find.
+var destModes = []Option{
+	{"same", "与源文件同目录"},
+	{"sibling", "同级顶层目录 + 后缀（源目录结构）"},
+	{"custom", "指定目录"},
+	{"mirror", "指定目录（源目录结构）"},
+}
+
+// relocateActions is the 处理方式 list for the three sections that move a file:
+// 已处理过的源文件, 被排除的文件, and the error / warning policies.
+var relocateActions = []Option{
+	{"keep", "不处理，留在原处"},
+	{"move", "移动到目标目录"},
+	{"copy", "复制到目标目录"},
+}
+
 func buildOptions() Options {
 	return Options{
 		// An empty value is a first-class choice, not a missing one: it means "do
 		// not pass -c:v / -c:a at all and let ffmpeg pick its default encoder".
-		VideoCodecs: append([]Option{{"", "默认（由 ffmpeg 决定）"}, {"copy", "复制原编码"}}, videoEncoderCatalog...),
+		VideoCodecs: append([]Option{{"", DefaultOptionLabel}, {"copy", "复制原编码"}}, videoEncoderCatalog...),
 		AudioCodecs: []Option{
-			{"", "默认（由 ffmpeg 决定）"},
+			{"", DefaultOptionLabel},
 			{"copy", "复制原编码"},
 			{"aac", "AAC（通用）"},
 			{"libmp3lame", "MP3"},
@@ -1341,7 +1356,7 @@ func buildOptions() Options {
 			{"pcm_s16le", "PCM 16-bit"},
 		},
 		Containers: []Option{
-			{"", "保持原样"},
+			{"", "沿用源文件的格式"},
 			{"mp4", "MP4"},
 			{"mkv", "MKV（Matroska）"},
 			{"mov", "MOV"},
@@ -1360,6 +1375,7 @@ func buildOptions() Options {
 			{"gif", "GIF"},
 		},
 		Presets: []Option{
+			{"", DefaultOptionLabel},
 			{"ultrafast", "ultrafast — 最快，体积最大"},
 			{"superfast", "superfast"},
 			{"veryfast", "veryfast"},
@@ -1379,6 +1395,7 @@ func buildOptions() Options {
 			{"percent", "按百分比缩放"},
 		},
 		ScaleAlgorithms: []Option{
+			{"", DefaultOptionLabel},
 			{"lanczos", "lanczos — 画质最好（推荐）"},
 			{"bicubic", "bicubic — 均衡"},
 			{"bilinear", "bilinear — 更快"},
@@ -1404,38 +1421,13 @@ func buildOptions() Options {
 			{"white", "白色"},
 			{"#101014", "深灰"},
 		},
-		OutputModes: []Option{
-			{"", "跟随全局设置"},
-			{"same", "与源文件同目录"},
-			{"sibling", "同级目录 + 后缀（保持子目录结构）"},
-			{"custom", "全部输出到指定目录"},
-			{"mirror", "指定目录 + 保持子目录结构"},
-		},
-		DestModes: []Option{
-			{"", "跟随全局设置"},
-			{"same", "与源文件同目录"},
-			{"sibling", "同级目录 + 后缀（保持子目录结构）"},
-			{"custom", "全部输出到指定目录"},
-			{"mirror", "指定目录 + 保持子目录结构"},
-		},
-		ConflictModes: []Option{
-			{"", "跟随全局设置"},
-			{"overwrite", "覆盖已有文件"},
-			{"skip", "跳过（保留已有文件）"},
-			{"rename", "自动重命名"},
-		},
-		FilterActions: []Option{
-			{"", "跟随全局设置"},
-			{"keep", "不处理，留在原处"},
-			{"move", "移动到目标目录"},
-			{"copy", "复制到目标目录"},
-		},
-		ProblemActions: []Option{
-			{"", "跟随全局设置"},
-			{"keep", "不处理，留在原处"},
-			{"move", "移动到目标目录"},
-			{"copy", "复制到目标目录"},
-			{"mark", "仅在结果中标记"},
-		},
+		OutputModes:   destModes,
+		DestModes:     destModes,
+		FilterActions: relocateActions,
+		// The 「已处理过的源文件」 section reads exactly like the filter's, so it
+		// gets the same list rather than a near-copy that can drift.
+		ExistingActions: relocateActions,
+		ProblemActions: append(append([]Option{}, relocateActions...),
+			Option{"mark", "仅在结果中标记"}),
 	}
 }

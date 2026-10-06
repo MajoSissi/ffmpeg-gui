@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -14,12 +15,13 @@ func mkInfo(path string) *media.Info {
 
 // globalWith builds a global template carrying the given output rules. The
 // engine no longer reads output rules from settings -- they all come from here.
-func globalWith(mode, suffix, pattern, conflict string) store.Template {
+// The 「已处理过的源文件」 policy is a separate section and irrelevant here:
+// ResolveOutput names the path and leaves an occupied one alone.
+func globalWith(mode, suffix, pattern string) store.Template {
 	g := store.DefaultGlobalTemplate()
 	g.OutMode = mode
 	g.OutSuffix = suffix
 	g.OutPattern = pattern
-	g.OutConflict = conflict
 	return g
 }
 
@@ -31,7 +33,7 @@ func globalWith(mode, suffix, pattern, conflict string) store.Template {
 // (a_out.mp4) put a second "_out" on every result for no benefit.
 func TestResolveOutputSibling(t *testing.T) {
 	root := filepath.Join("D:", "video", "mmd")
-	global := globalWith(store.OutputSibling, "_out", "", store.ConflictRename)
+	global := globalWith(store.OutputSibling, "_out", "")
 
 	cases := []struct {
 		name string
@@ -69,7 +71,7 @@ func TestResolveOutputTemplateOverride(t *testing.T) {
 	root := filepath.Join("D:", "video", "mmd")
 	src := filepath.Join(root, "sub", "b.mp4")
 
-	global := globalWith(store.OutputSame, "", "{name}", "")
+	global := globalWith(store.OutputSame, "", "{name}")
 
 	eff := store.Template{
 		OutMode: store.OutputSibling, OutSuffix: "_done", OutputOverride: true,
@@ -93,7 +95,7 @@ func TestResolveOutputFollowerIgnoresOwnValues(t *testing.T) {
 	root := filepath.Join("D:", "video", "mmd")
 	src := filepath.Join(root, "sub", "b.mp4")
 
-	global := globalWith(store.OutputSibling, "_out", "{name}", "")
+	global := globalWith(store.OutputSibling, "_out", "{name}")
 
 	eff := store.Template{
 		OutMode: store.OutputSame, OutSuffix: "_stale", OutputOverride: false,
@@ -116,7 +118,7 @@ func TestResolveOutputInheritsGlobal(t *testing.T) {
 	root := filepath.Join("D:", "video", "mmd")
 	src := filepath.Join(root, "sub", "b.mp4")
 
-	global := globalWith(store.OutputSibling, "_out", "{name}", "")
+	global := globalWith(store.OutputSibling, "_out", "{name}")
 
 	eff := store.Template{OutputOverride: true}.Effective(global)
 	got, err := ResolveOutput(OutputRequest{
@@ -131,13 +133,15 @@ func TestResolveOutputInheritsGlobal(t *testing.T) {
 	}
 }
 
-// The extension placeholder must name the *output* file, not the source: picking a
-// different container has to change the extension or the result is an MP4 named .mkv.
+// The extension comes from 「输出格式」, not from the naming template. {ext} used to be
+// the way to spell it out, which made the output depend on two settings at once; a
+// plain {name} now yields the container's extension, so an MKV source named .mp4 is
+// the expected result rather than a bug.
 func TestResolveOutputExtFollowsContainer(t *testing.T) {
 	root := filepath.Join("D:", "video", "mmd")
 	src := filepath.Join(root, "a.mkv")
 
-	global := globalWith(store.OutputSibling, "_out", "{name}.{ext}", "")
+	global := globalWith(store.OutputSibling, "_out", "{name}")
 
 	eff := store.Template{Container: "mp4", OutputOverride: true}.Effective(global)
 	got, err := ResolveOutput(OutputRequest{
@@ -149,6 +153,22 @@ func TestResolveOutputExtFollowsContainer(t *testing.T) {
 	want := filepath.Join(root+"_out", "a.mp4")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+
+	// A template written while {ext} still worked must not leave the token in the
+	// name or produce a doubled extension.
+	legacy := store.Template{
+		Container: "mp4", OutputOverride: true,
+		OutPattern: "{name}.{ext}",
+	}.Effective(global)
+	got2, err := ResolveOutput(OutputRequest{
+		Info: mkInfo(src), Tpl: legacy, SrcRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("ResolveOutput (legacy pattern): %v", err)
+	}
+	if got2 != want {
+		t.Errorf("legacy {{name}}.{{ext}} gave %q, want %q", got2, want)
 	}
 }
 
@@ -218,5 +238,79 @@ func TestSiblingSuffixFallback(t *testing.T) {
 	want := filepath.Dir(src) + store.DefaultOutputSuffix
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Problem files are renamed with the same pattern language as the output section.
+// Two things make it different from there and are easy to get wrong: an empty
+// pattern must mean "keep the file's own name", and {ext} is the *source*
+// extension -- nothing is re-encoded, the original file is what gets moved.
+func TestRelocateProblemFilePattern(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "clip.mkv")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No pattern: the original name survives, extension included.
+	got, err := Relocate(MoveRequest{
+		Src:     src,
+		SrcRoot: root,
+		Dest:    store.DestRule{Mode: store.OutputCustom, Dir: filepath.Join(root, "failed")},
+	})
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if filepath.Base(got) != "clip.mkv" {
+		t.Errorf("empty pattern should keep the file name, got %q", filepath.Base(got))
+	}
+
+	// A pattern: {ext} is the source extension here, not an output one.
+	src2 := filepath.Join(root, "clip2.mkv")
+	if err := os.WriteFile(src2, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = Relocate(MoveRequest{
+		Src:     src2,
+		SrcRoot: root,
+		Dest:    store.DestRule{Mode: store.OutputCustom, Dir: filepath.Join(root, "failed")},
+		Pattern: "{name}_bad_{dir}.{ext}",
+	})
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if filepath.Base(got) != "clip2_bad_"+filepath.Base(root)+".mkv" {
+		t.Errorf("got %q -- {ext} must be the source extension", filepath.Base(got))
+	}
+}
+
+// ProblemSpec.Pattern picks the right template per status, so an error rule and a
+// warning rule can name their files differently.
+func TestProblemSpecPatternPerStatus(t *testing.T) {
+	p := store.ProblemSpec{ErrorPattern: "err_{name}.{ext}", WarningPattern: "warn_{name}.{ext}"}
+	if got := p.Pattern("error"); got != "err_{name}.{ext}" {
+		t.Errorf("error pattern = %q", got)
+	}
+	if got := p.Pattern(store.StatusWarning); got != "warn_{name}.{ext}" {
+		t.Errorf("warning pattern = %q", got)
+	}
+}
+
+// The two token sets must not leak into each other. A naming template is a file
+// name, so {ext} is not available there and the container supplies the extension;
+// a file being relocated keeps its own, and there {ext} still means something.
+func TestExpandOutputPatternDropsExt(t *testing.T) {
+	n := Naming{Name: "clip", Ext: "mkv", Template: "t", Dir: "d", Index: 7}
+	if got := ExpandOutputPattern("{name}.{ext}", n); got != "clip." {
+		t.Errorf("ExpandOutputPattern left the token in: %q", got)
+	}
+	if got := ExpandPattern("{name}.{ext}", n); got != "clip.mkv" {
+		t.Errorf("ExpandPattern = %q, want %q", got, "clip.mkv")
+	}
+	// The rest of the tokens are shared by both.
+	for _, tok := range []string{"{name}", "{template}", "{dir}", "{index}"} {
+		if ExpandOutputPattern(tok, n) == tok || ExpandPattern(tok, n) == tok {
+			t.Errorf("%s was not expanded", tok)
+		}
 	}
 }

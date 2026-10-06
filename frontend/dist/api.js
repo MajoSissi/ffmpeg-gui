@@ -43,14 +43,23 @@ function emitMock(event, payload) {
 const MOCK_GLOBAL = {
   id: 't-global', name: '全局模板', global: true,
   description: '所有模板的默认值。新建模板会以它为起点；模板里留空的项也跟随它。',
-  outMode: 'sibling', outDir: '', outSuffix: '_out', outPattern: '{name}.{ext}', outConflict: 'rename',
+  outMode: 'sibling', outDir: '', outSuffix: '_out', outPattern: '{name}',
   outputOverride: true,
   perf: { concurrency: 2, logLevel: 'warning', retryCount: 0, threads: 0, idlePriority: false, deleteOnFail: true },
+  // The global ships WITHOUT this section (store.DefaultGlobalTemplate leaves it
+  // nil, and a non-nil section always skips an already-processed file). The mock
+  // keeps one so the editor's follow-state can be exercised; values match what
+  // seedSection produces when a user opens the section.
+  existing: {
+    action: 'keep',
+    dest: { mode: 'sibling', dir: '', suffix: '_done' },
+    pattern: '{name}', overwrite: false,
+  },
   filter: {
     minSizeMB: 300, maxSizeMB: 0, minLongEdge: 0, maxLongEdge: 0, minDuration: 0, maxDuration: 0,
     includeExts: [], excludeExts: [], action: 'move',
     dest: { mode: 'mirror', dir: 'D:/Media/small', suffix: '_out' },
-    renamePattern: '{name}.{ext}', overwrite: false,
+    renamePattern: '{name}', overwrite: false,
   },
   problems: {
     errorAction: 'move', errorDest: { mode: 'mirror', dir: 'D:/Media/error', suffix: '_out' },
@@ -60,13 +69,13 @@ const MOCK_GLOBAL = {
 
 const MOCK_TEMPLATES = [
   MOCK_GLOBAL,
-  // perf / filter / problems are absent on purpose: nil is the "follow" state, and so
-  // is a missing outputOverride.
+  // perf / existing / filter / problems are absent on purpose: nil is the "follow"
+// state, and so is a missing outputOverride.
   { id: 't-remux', name: '无损转封装', description: '仅重封装，不重编码。秒级完成，画质完全无损。', builtin: true, container: '', videoMode: 'copy', audioMode: 'copy', mapAll: true, rateControl: 'crf', crf: 23, resize: { mode: 'keep', multipleOf: 2, algorithm: 'lanczos' }, maxMuxQueue: 0 },
   { id: 't-h264', name: 'H.264 通用 1080p', description: '长边压到 1080p，CRF 23 视觉无损。', builtin: true, container: 'mp4', videoMode: 'encode', videoCodec: 'libx264', rateControl: 'crf', crf: 23, preset: 'medium', pixFmt: 'yuv420p', resize: { mode: 'longedge', longEdge: 1920, onlyLarger: true, multipleOf: 2, algorithm: 'lanczos' }, audioMode: 'encode', audioCodec: 'aac', audioBitrate: '192k', audioChannels: 2, fastStart: true, maxMuxQueue: 0 },
   { id: 't-h265', name: 'H.265 高压缩', description: '同画质体积更小。', builtin: true, container: 'mp4', videoMode: 'encode', videoCodec: 'libx265', rateControl: 'crf', crf: 26, preset: 'medium', pixFmt: 'yuv420p', resize: { mode: 'longedge', longEdge: 1920, onlyLarger: true, multipleOf: 2, algorithm: 'lanczos' }, audioMode: 'encode', audioCodec: 'aac', audioBitrate: '128k', fastStart: true, maxMuxQueue: 0 },
   { id: 't-4k2k', name: '4K 长边转 2K', description: '自动识别横竖屏：长边统一到 2560，短边按比例。', builtin: true, container: 'mp4', videoMode: 'encode', videoCodec: 'libx265', rateControl: 'crf', crf: 24, preset: 'medium', pixFmt: 'yuv420p', resize: { mode: 'longedge', longEdge: 2560, onlyLarger: true, multipleOf: 2, algorithm: 'lanczos' }, audioMode: 'encode', audioCodec: 'aac', audioBitrate: '192k', fastStart: true, maxMuxQueue: 0,
-    // A template that overrides one section and follows the other two.
+    // A template that overrides one section and follows the other three.
     perf: { concurrency: 1, logLevel: 'warning', retryCount: 1, idlePriority: false, deleteOnFail: true } },
 ];
 
@@ -75,13 +84,15 @@ const MOCK_TEMPLATES = [
    opt-in per template, so a template that does not ask for it gets no flag. */
 const FFMPEG_BIN = 'C://Users//Majo//AppData//Local//Microsoft//WinGet//Links//ffmpeg.exe';
 function FFMPEG_ARGS(input, output, w, h) {
+  // Only the pinned axis is written out; the other is -2 so ffmpeg keeps the
+  // aspect ratio and lands on an even number, matching engine.computeScale.
   return [
     '-hide_banner', '-nostdin', '-y', '-progress', 'pipe:1',
     '-i', input,
     '-map', '0',
     '-c:v', 'libx265', '-crf', '24', '-preset', 'medium', '-pix_fmt', 'yuv420p',
-    '-vf', `scale=${w}:${h}:flags=lanczos`,
-    '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+    '-vf', `scale=${w}:-2:flags=lanczos`,
+    '-c:a', 'copy',
     '-movflags', '+faststart',
     output,
   ];
@@ -112,6 +123,10 @@ function mkJob(id, name, w, h, status, progress, extra = {}) {
     outputName: name,
     sourceRoot: 'D:/Media/2024', templateId: 't-4k2k', templateName: '4K 长边转 2K',
     status, message: extra.message ?? '', error: extra.error ?? '', warnings: extra.warnings ?? [],
+    // A suspended job keeps status `running` and only adds this flag -- the queue is
+    // not doing anything different for it, so the badge is a separate input to
+    // statusChip rather than a status of its own.
+    frozen: !!extra.frozen,
     command: '', progress, speed: extra.speed ?? 0, bitrate: extra.bitrate ?? '',
     frame: 0, fps: 0, outTimeMs: 0, outBytes: 0,
     targetWidth: extra.tw ?? 2560, targetHeight: extra.th ?? 1440, resized: !!extra.tw,
@@ -134,9 +149,9 @@ const MOCK_STATE = {
     mkJob('j8', '超短视频.mp4', 1280, 720, 'filtered', 0, { message: '体积 18.4 MB 小于下限 300 MB；已移动到 D:/Media/small' }),
     mkJob('j9', '损坏文件.mp4', 0, 0, 'skipped', 0, { message: '输出文件已存在，已跳过' }),
   ],
-  stats: { total: 9, pending: 3, running: 1, done: 1, warning: 1, failed: 1, canceled: 0, skipped: 1, filtered: 1, paused: false, workers: 2, progress: 0.44 },
+  stats: { total: 9, pending: 3, running: 1, done: 1, warning: 1, failed: 1, canceled: 0, skipped: 1, filtered: 1, paused: false, started: true, workers: 2, progress: 0.44 },
   log: [
-    ['j1', '$ "C:\\Users\\Majo\\...\\ffmpeg.exe" -hide_banner -nostdin -y -progress pipe:1 -i "D:\\Media\\2024\\DJI_0042.MP4" -c:v libx265 -crf 24 -preset medium -pix_fmt yuv420p -vf scale=2560:1440:flags=lanczos -c:a aac -b:a 192k -ac 2 -movflags +faststart "D:\\Media\\2024_out\\DJI_0042.MP4"'],
+    ['j1', '$ "C:\\Users\\Majo\\...\\ffmpeg.exe" -hide_banner -nostdin -y -progress pipe:1 -i "D:\\Media\\2024\\DJI_0042.MP4" -map 0 -c:v libx265 -crf 24 -preset medium -pix_fmt yuv420p -vf scale=2560:-2:flags=lanczos -c:a copy -movflags +faststart "D:\\Media\\2024_out\\DJI_0042.MP4"'],
     ['j1', 'Input #0, mov,mp4,m4a,3gp,3g2,mj2, from \'D:\\Media\\2024\\DJI_0042.MP4\':'],
     ['j1', '[warn] deprecated pixel format used, make sure you did set range correctly'],
     ['j1', 'Stream #0:0: Video: hevc (Main), yuv420p(tv), 3840x2160, 29.97 fps'],
@@ -186,8 +201,23 @@ const MOCK_SETTINGS = {
   globalInArgs: '', globalOutArgs: '', hardwareDecode: false,
   preventSleep: true, enableTray: true, closeToTray: true, startMinimized: false, confirmExit: true,
   keepLogLines: 2000, saveRunLog: true, logMaxSizeMB: 50, logKeepDays: 7,
-  lastTemplateId: 't-4k2k', showLogPanel: true, logPanelHeight: 220, logDir: '',
+  lastTemplateId: 't-4k2k', showLogPanel: true, logPanelHeight: 0, logPanelSized: false, logDir: '',
 };
+
+// Shared by the lists at the bottom so one wording fix lands everywhere at once.
+// They mirror app.go's destModes / relocateActions verbatim -- these used to be
+// four near-copies whose wording had already drifted from the real thing.
+const MOCK_DEST_MODES = [
+  { value: 'same', label: '与源文件同目录' },
+  { value: 'sibling', label: '同级顶层目录 + 后缀（源目录结构）' },
+  { value: 'custom', label: '指定目录' },
+  { value: 'mirror', label: '指定目录（源目录结构）' },
+];
+const MOCK_RELOCATE = [
+  { value: 'keep', label: '不处理，留在原处' },
+  { value: 'move', label: '移动到目标目录' },
+  { value: 'copy', label: '复制到目标目录' },
+];
 
 const OPTIONS = {
   videoCodecs: [
@@ -209,11 +239,13 @@ const OPTIONS = {
     { value: 'flac', label: 'FLAC 无损' },
   ],
   containers: [
-    { value: '', label: '保持原样' }, { value: 'mp4', label: 'MP4' }, { value: 'mkv', label: 'MKV（Matroska）' },
+    { value: '', label: '沿用源文件的格式' }, { value: 'mp4', label: 'MP4' }, { value: 'mkv', label: 'MKV（Matroska）' },
     { value: 'mov', label: 'MOV' }, { value: 'webm', label: 'WebM' }, { value: 'm4a', label: 'M4A（仅音频）' },
     { value: 'mp3', label: 'MP3（仅音频）' },
   ],
-  presets: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'].map((v) => ({ value: v, label: v })),
+  presets: [{ value: '', label: '默认（由 ffmpeg 决定）' }]
+    .concat(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']
+      .map((v) => ({ value: v, label: v }))),
   resizeModes: [
     { value: 'keep', label: '保持原分辨率' },
     { value: 'longedge', label: '锁定长边（自动识别横竖屏）' },
@@ -223,6 +255,7 @@ const OPTIONS = {
     { value: 'percent', label: '按百分比缩放' },
   ],
   scaleAlgorithms: [
+    { value: '', label: '默认（由 ffmpeg 决定）' },
     { value: 'lanczos', label: 'lanczos — 画质最好（推荐）' },
     { value: 'bicubic', label: 'bicubic — 均衡' },
     { value: 'bilinear', label: 'bilinear — 更快' },
@@ -236,41 +269,15 @@ const OPTIONS = {
     { value: 'crf', label: 'CRF / 恒定质量（推荐）' }, { value: 'bitrate', label: '目标码率' }, { value: 'qp', label: 'QP / 固定量化' },
   ],
   padColors: [{ value: 'black', label: '黑色' }, { value: 'white', label: '白色' }, { value: '#101014', label: '深灰' }],
-  outputModes: [
-    { value: '', label: '跟随全局设置' },
-    { value: 'same', label: '与源文件同一目录' },
-    { value: 'sibling', label: '同级目录 + 后缀（保持子目录结构）' },
-    { value: 'custom', label: '全部输出到指定目录' },
-    { value: 'mirror', label: '输出到指定目录并保持子目录结构' },
-  ],
-  // The same four rules are offered to the filter transfer and to the
-  // error/warning policies, plus a "follow" entry on each.
-  destModes: [
-    { value: '', label: '跟随全局设置' },
-    { value: 'same', label: '与源文件同一目录' },
-    { value: 'sibling', label: '同级目录 + 后缀（保持子目录结构）' },
-    { value: 'custom', label: '全部输出到指定目录' },
-    { value: 'mirror', label: '输出到指定目录并保持子目录结构' },
-  ],
-  conflictModes: [
-    { value: '', label: '跟随全局设置' },
-    { value: 'overwrite', label: '直接覆盖' },
-    { value: 'skip', label: '跳过已存在的文件' },
-    { value: 'rename', label: '自动重命名（追加 _1、_2）' },
-  ],
-  filterActions: [
-    { value: '', label: '跟随全局设置' },
-    { value: 'keep', label: '只标记，不动文件' },
-    { value: 'move', label: '移动到目标目录' },
-    { value: 'copy', label: '复制到目标目录' },
-  ],
-  problemActions: [
-    { value: '', label: '跟随全局设置' },
-    { value: 'keep', label: '保留在原位置' },
-    { value: 'move', label: '移动到目标目录' },
-    { value: 'copy', label: '复制到目标目录' },
-    { value: 'mark', label: '只在记录中标记' },
-  ],
+  // These lists mirror app.go's buildOptions() verbatim. They used to drift
+  // (「只标记，不动文件」 vs 「不处理，留在原处」), which made a mock-driven look
+  // differ from the real thing -- so the wording has to match, not just the values.
+  outputModes: MOCK_DEST_MODES,
+  // The same four rules reach every section that moves a file somewhere.
+  destModes: MOCK_DEST_MODES,
+  existingActions: MOCK_RELOCATE,
+  filterActions: MOCK_RELOCATE,
+  problemActions: [...MOCK_RELOCATE, { value: 'mark', label: '仅在结果中标记' }],
 };
 
 const mock = {
@@ -292,10 +299,13 @@ const mock = {
   Templates: () => MOCK_TEMPLATES,
   GlobalTemplate: () => MOCK_TEMPLATES.find((t) => t.global) || MOCK_GLOBAL,
   NewTemplate: () => ({
-    id: 'tmp-' + Date.now(), name: '', description: '', container: '', videoMode: 'encode', audioMode: 'encode',
+    id: 'tmp-' + Date.now(), name: '', description: '', container: '', videoMode: 'encode',
+    // Audio starts on copy on the Go side too (store.NewFromGlobal): most jobs only
+    // re-encode the video.
+    audioMode: 'copy',
     // Every policy section starts switched off, i.e. following the global template.
     outputOverride: false,
-    resize: { mode: 'keep', multipleOf: 2, algorithm: 'lanczos' },
+    resize: { mode: 'keep', multipleOf: 2, algorithm: '' },
   }),
   SaveTemplate: (t) => {
     // The defaults template is never created or overwritten through this path.
@@ -369,6 +379,7 @@ const mock = {
   AddFilesDialog: () => ({ added: 3, errors: [] }),
   AddFolderDialog: () => ({ added: 12, errors: ['D:/Media/broken: 拒绝访问'] }),
   AddPaths: () => ({ added: 2, errors: [] }),
+  AddDroppedFiles: () => ({ added: 2, errors: [] }),
   Jobs: () => MOCK_STATE.jobs,
   Stats: () => MOCK_STATE.stats,
   StartQueue: () => {}, PauseQueue: () => {}, ResumeQueue: () => {},
@@ -382,13 +393,32 @@ const mock = {
     MOCK_STATE.jobs = MOCK_STATE.jobs.filter((j) => !want.has(j.id));
     return before - MOCK_STATE.jobs.length;
   },
-  SetQueueFilter: (f) => {
-    MOCK_SETTINGS.queueFilter = f || null;
-    MOCK_SETTINGS.queueFilterSet = !!f;
-  },
   RemoveFinished: () => 0, ClearQueue: () => 0, RetryFailed: () => 0,
+  // Mirrors the real SetAllTemplates: every row that is not on the CPU takes the
+  // new template, and the finished ones go back to 排队中 so the counters the
+  // toast shows are not made up.
+  SetJobTemplate: (jobId, tid) => {
+    const t = MOCK_TEMPLATES.find((x) => x.id === tid);
+    const j = MOCK_STATE.jobs.find((x) => x.id === jobId);
+    if (t && j) { j.templateId = t.id; j.templateName = t.name; }
+  },
+  SetAllTemplates: (tid) => {
+    const t = MOCK_TEMPLATES.find((x) => x.id === tid);
+    if (!t) return { applied: 0, requeued: 0 };
+    let applied = 0; let requeued = 0;
+    MOCK_STATE.jobs.forEach((j) => {
+      if (['running', 'preparing'].includes(j.status)) return;
+      j.templateId = t.id; j.templateName = t.name;
+      applied++;
+      if (['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status)) {
+        j.status = 'pending'; j.progress = 0; j.message = '排队中'; j.error = '';
+        requeued++;
+      }
+    });
+    emitMock('queue:state', MOCK_STATE.stats);
+    return { applied, requeued };
+  },
   JobLogs: (id) => MOCK_STATE.log.filter(([j]) => j === id).map(([, l]) => l),
-  SetJobTemplate: () => {}, SetAllTemplates: () => 0,
   Probe: () => mkInfo('DJI_0042.MP4', 3840, 2160),
   // Mirrors the real PreviewCommand: with a real input path the resolved paths are
   // shown, and with an empty one the {输入}/{输出} variables stand in (that is what
@@ -403,21 +433,44 @@ const mock = {
       warnings: [], targetW: 2560, targetH: 1440, resized: true, outputExt: 'mp4',
     };
   },
-  PreviewQueue: (tid) => MOCK_STATE.jobs.filter((j) => !['done', 'failed', 'filtered', 'skipped'].includes(j.status)).map((j) => {
-    const w = j.targetWidth || j.infoBefore.displayWidth;
-    const h = j.targetHeight || j.infoBefore.displayHeight;
-    const args = FFMPEG_ARGS(j.input, j.output, w, h);
-    return {
-      jobId: j.id, input: j.input, output: j.output,
-      bin: FFMPEG_BIN, args, command: [FFMPEG_BIN, ...args].join(' '),
-      notes: [],
-    };
-  }),
+  // Same as PreviewCommand but fed the editor's draft, so an unsaved edit is
+  // visible in the preview. The mock returns the same shape either way.
+  PreviewTemplate: (tpl, path) => mock.PreviewCommand(tpl?.id, path),
   History: (q) => ({ total: MOCK_HISTORY.length, items: MOCK_HISTORY }),
   ClearHistory: () => {}, ExportHistoryCSV: () => 'D:/Code-Project/ffmpeg-gui/build/bin/data/ffmpeg-gui-处理记录-20261005.csv',
   OpenPath: () => {}, RevealPath: () => {}, OpenOutputDir: () => {}, ShowDataDir: () => {},
   DataDir: () => 'D:/Code-Project/ffmpeg-gui/build/bin/data',
   AppVersion: () => '1.0.0', QuitApp: () => {}, ShowWindow: () => {},
+
+  // Queue control. These were missing entirely, so every 暂停 / 继续 / 停止 click in
+  // a mock-driven preview threw and the button looked broken -- which is exactly the
+  // bug report that sent me looking at the real implementation first.
+  Stats: () => ({ ...MOCK_STATE.stats }),
+  StartQueue: () => {
+    MOCK_STATE.stats.started = true;
+    MOCK_STATE.stats.paused = false;
+    emitMock('queue:state', { ...MOCK_STATE.stats });
+  },
+  PauseQueue: () => {
+    MOCK_STATE.stats.paused = true;
+    emitMock('queue:state', { ...MOCK_STATE.stats });
+  },
+  ResumeQueue: () => {
+    MOCK_STATE.stats.paused = false;
+    emitMock('queue:state', { ...MOCK_STATE.stats });
+  },
+  TogglePause: () => {
+    MOCK_STATE.stats.paused = !MOCK_STATE.stats.paused;
+    emitMock('queue:state', { ...MOCK_STATE.stats });
+    return MOCK_STATE.stats.paused;
+  },
+  StopQueue: () => {
+    MOCK_STATE.stats.started = false;
+    MOCK_STATE.stats.paused = false;
+    emitMock('queue:state', { ...MOCK_STATE.stats });
+  },
+  RemoveJob: () => 0, RemoveJobs: () => 0, RemoveFinished: () => 0,
+  ClearQueue: () => 0, RetryFailed: () => 0,
 };
 
 /* A tiny live ticker so the mock shows moving progress in previews. */
@@ -466,6 +519,7 @@ export const api = {
   addFilesDialog: (recursive) => call('AddFilesDialog', recursive),
   addFolderDialog: (recursive) => call('AddFolderDialog', recursive),
   addPaths: (paths, recursive) => call('AddPaths', paths, recursive),
+  addDroppedFiles: (paths) => call('AddDroppedFiles', paths),
   jobs: () => call('Jobs'),
   stats: () => call('Stats'),
   startQueue: () => call('StartQueue'),
@@ -475,7 +529,6 @@ export const api = {
   stopQueue: () => call('StopQueue'),
   removeJob: (id) => call('RemoveJob', id),
   removeJobs: (ids) => call('RemoveJobs', ids),
-  setQueueFilter: (f) => call('SetQueueFilter', f),
   removeFinished: () => call('RemoveFinished'),
   clearQueue: () => call('ClearQueue'),
   retryFailed: () => call('RetryFailed'),
@@ -484,7 +537,7 @@ export const api = {
   setAllTemplates: (tid) => call('SetAllTemplates', tid),
   probe: (p) => call('Probe', p),
   previewCommand: (tid, path) => call('PreviewCommand', tid, path),
-  previewQueue: (tid) => call('PreviewQueue', tid),
+  previewTemplate: (tpl, path) => call('PreviewTemplate', tpl, path),
   history: (q) => call('History', q),
   clearHistory: () => call('ClearHistory'),
   exportHistoryCSV: (q) => call('ExportHistoryCSV', q),

@@ -146,7 +146,6 @@ func TestResolveOutputAvoidsOverwritingSource(t *testing.T) {
 	global := store.DefaultGlobalTemplate()
 	global.OutMode = store.OutputSame
 	global.OutPattern = "{name}" // deliberately identical to the source name
-	global.OutConflict = store.ConflictOverwrite
 
 	out, err := ResolveOutput(OutputRequest{
 		Info: info,

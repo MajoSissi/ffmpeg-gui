@@ -52,10 +52,19 @@ export const ICONS = {
   eye: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
 };
 
-/** Render an inline SVG for a named icon. */
+/**
+ * Render an inline SVG for a named icon.
+ *
+ * An unknown name used to fall back to an empty path: valid markup, no drawing,
+ * no error -- a button that only reveals itself when the pointer happens to land
+ * on it. Say so loudly instead; the caller has a name to fix.
+ */
 export function icon(name, cls = '') {
-  const d = ICONS[name] || '';
-  return `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+  const d = ICONS[name];
+  if (!d) {
+    console.error(`icon: 没有名为 "${name}" 的图标`);
+  }
+  return `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${d || ''}"/></svg>`;
 }
 
 /**

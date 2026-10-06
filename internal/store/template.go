@@ -16,13 +16,14 @@ const (
 	ResizePercent   = "percent"   // 按百分比缩放
 )
 
-// Scale algorithms understood by ffmpeg's scale filter.
+// Scale algorithms understood by ffmpeg's scale filter. The empty string is a
+// valid choice too: it means "emit no :flags= at all", i.e. ffmpeg's own default
+// (bicubic).
 const (
 	ScaleLanczos  = "lanczos"
 	ScaleBicubic  = "bicubic"
 	ScaleBilinear = "bilinear"
 	ScaleNeighbor = "neighbor"
-	ScaleBicubicF = "bicubic"
 )
 
 // ResizeSpec describes the target geometry for a template.
@@ -133,22 +134,22 @@ type Template struct {
 	// 输出与命名。留空的字段跟随「全局模板」里的同一项；但只要
 	// OutputOverride 为 false，整段都跟随全局，模板自己写的值会被忽略
 	//（对应界面上的「与全局不同」开关）。
-	OutMode     string `json:"outMode"`     // "" | same | sibling | custom | mirror
-	OutDir      string `json:"outDir"`      // custom / mirror 使用的目录
-	OutSuffix   string `json:"outSuffix"`   // sibling 使用的后缀，如 _out
-	OutPattern  string `json:"outPattern"`  // 命名模板，如 {name}
-	OutConflict string `json:"outConflict"` // "" | overwrite | skip | rename
+	OutMode    string `json:"outMode"`    // "" | same | sibling | custom | mirror
+	OutDir     string `json:"outDir"`     // custom / mirror 使用的目录
+	OutSuffix  string `json:"outSuffix"`  // sibling 使用的后缀，如 _out
+	OutPattern string `json:"outPattern"` // 命名模板，如 {name}
 	// OutputOverride 记录这一段是不是被模板显式接管。关掉时整段跟随全局模板。
 	// 之所以用布尔量而不是指针，是因为输出段里没有「0 有意义」的字段——
 	// 每个字段为空就表示未设置，逐字段回落已经足够。
 	OutputOverride bool `json:"outputOverride,omitempty"`
 
-	// 以下三段整段跟随全局：指针为 nil 即表示"这一段用全局模板的值"。
+	// 以下四段整段跟随全局：指针为 nil 即表示"这一段用全局模板的值"。
 	// 之所以用整段指针而不是逐字段留空，是因为 0 在这些字段里本身就有意义
 	//（例如"不限制体积"和"跟随全局"必须能区分开）。
-	Perf     *PerfSpec    `json:"perf,omitempty"`
-	Filter   *FilterSpec  `json:"filter,omitempty"`
-	Problems *ProblemSpec `json:"problems,omitempty"`
+	Perf     *PerfSpec     `json:"perf,omitempty"`
+	Existing *ExistingSpec `json:"existing,omitempty"`
+	Filter   *FilterSpec   `json:"filter,omitempty"`
+	Problems *ProblemSpec  `json:"problems,omitempty"`
 
 	// 容器与元数据
 	MapAll        bool `json:"mapAll"`
@@ -180,8 +181,7 @@ func (t Template) OverridesOutput() bool {
 	if !t.OutputOverride {
 		return false
 	}
-	return t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" ||
-		t.OutPattern != "" || t.OutConflict != ""
+	return t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" || t.OutPattern != ""
 }
 
 // Normalize fills safe defaults for enum-ish fields.
@@ -212,9 +212,9 @@ func (t *Template) Normalize() {
 	if t.Resize.MultipleOf <= 0 {
 		t.Resize.MultipleOf = 2
 	}
-	if t.Resize.Algorithm == "" {
-		t.Resize.Algorithm = ScaleLanczos
-	}
+	// The scale algorithm stays "" when the user picked 默认: that is the difference
+	// between "not set" and "lanczos", and filling lanczos in here would add
+	// :flags=lanczos to the command of a template that deliberately left it alone.
 	if t.Resize.PadColor == "" {
 		t.Resize.PadColor = "black"
 	}
@@ -228,23 +228,17 @@ func (t *Template) Normalize() {
 	default:
 		t.OutMode = ""
 	}
-	switch t.OutConflict {
-	case "", ConflictOverwrite, ConflictSkip, ConflictRename:
-	default:
-		t.OutConflict = ""
-	}
-	// Files written before the output section got a switch carry their values but
-	// not the flag. Treating "has a value but no flag" as "switched on" keeps
-	// those templates behaving the way they did, instead of silently dropping
-	// their output rules back to the global ones.
-	if !t.OutputOverride && !t.Global {
-		t.OutputOverride = t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" ||
-			t.OutPattern != "" || t.OutConflict != ""
-	}
-	// The three inheritable sections are only normalised when present; a nil
+	// The four inheritable sections are only normalised when present; a nil
 	// section is the "follow the global template" state and must stay nil.
 	if t.Perf != nil {
 		t.Perf.Normalize()
+	}
+	if t.Existing != nil {
+		switch t.Existing.Action {
+		case "", ActionMove, ActionCopy:
+		default:
+			t.Existing.Action = ""
+		}
 	}
 	if t.Filter != nil {
 		switch t.Filter.Action {
@@ -285,10 +279,8 @@ func TemplatesPath() string { return Path("templates.json") }
 
 // LoadTemplates reads templates.json, seeding the built-in set on first run.
 //
-// It also guarantees a global template is present and pinned first. When the file
-// predates that concept, migrate is used to carry the old global settings over so
-// an existing configuration is not silently lost.
-func LoadTemplates(migrate func() (Template, bool)) []Template {
+// It also guarantees a global template is present and pinned first.
+func LoadTemplates() []Template {
 	var list []Template
 	ok, err := ReadJSON(TemplatesPath(), &list)
 	if !ok || err != nil || len(list) == 0 {
@@ -298,14 +290,7 @@ func LoadTemplates(migrate func() (Template, bool)) []Template {
 		list[i].Normalize()
 	}
 
-	var fn func() Template
-	if migrate != nil {
-		fn = func() Template {
-			t, _ := migrate()
-			return t
-		}
-	}
-	list, changed := EnsureGlobal(list, fn)
+	list, changed := EnsureGlobal(list)
 	if !ok || err != nil || changed {
 		_ = SaveTemplates(list)
 	}

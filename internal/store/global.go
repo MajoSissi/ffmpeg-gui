@@ -59,11 +59,11 @@ func (d DestRule) Validate(label string) error {
 		return nil
 	case OutputCustom:
 		if strings.TrimSpace(d.Dir) == "" {
-			return fmt.Errorf("「%s」选择了全部输出到指定目录，但目录为空", label)
+			return fmt.Errorf("「%s」选择了指定目录，但目录为空", label)
 		}
 	case OutputMirror:
 		if strings.TrimSpace(d.Dir) == "" {
-			return fmt.Errorf("「%s」选择了指定目录 + 保持子目录结构，但目录为空", label)
+			return fmt.Errorf("「%s」选择了指定目录（源目录结构），但目录为空", label)
 		}
 	default:
 		return fmt.Errorf("「%s」的输出方式无效：%s", label, d.Mode)
@@ -72,7 +72,7 @@ func (d DestRule) Validate(label string) error {
 }
 
 // ---------------------------------------------------------------------------
-// The three inheritable sections
+// The four inheritable sections
 // ---------------------------------------------------------------------------
 
 // PerfSpec is the processing-performance section. A template that leaves it nil
@@ -153,11 +153,27 @@ func (f FilterSpec) HandlesExcluded() bool {
 }
 
 // ProblemSpec is the policy for files that failed or produced warnings.
+//
+// ErrorPattern / WarningPattern rename the file on the way out, with the same
+// variables as the output section ({name} {ext} {template} {dir}). Empty means
+// "keep the original file name". {ext} is the *source* extension here: nothing
+// is re-encoded, the original file is the thing being moved.
 type ProblemSpec struct {
-	ErrorAction   string   `json:"errorAction"` // keep | move | copy
-	ErrorDest     DestRule `json:"errorDest"`
-	WarningAction string   `json:"warningAction"` // keep | move | copy | mark
-	WarningDest   DestRule `json:"warningDest"`
+	ErrorAction    string   `json:"errorAction"` // keep | move | copy
+	ErrorDest      DestRule `json:"errorDest"`
+	ErrorPattern   string   `json:"errorPattern,omitempty"`
+	WarningAction  string   `json:"warningAction"` // keep | move | copy | mark
+	WarningDest    DestRule `json:"warningDest"`
+	WarningPattern string   `json:"warningPattern,omitempty"`
+}
+
+// Pattern returns the rename template for the given status, or "" when the file
+// should keep its name.
+func (p ProblemSpec) Pattern(status string) string {
+	if status == StatusWarning {
+		return p.WarningPattern
+	}
+	return p.ErrorPattern
 }
 
 // Handles reports whether problem files of the given status should be relocated.
@@ -187,6 +203,28 @@ func (p ProblemSpec) Action(status string) string {
 // StatusWarning mirrors engine.StatusWarning without importing the engine.
 const StatusWarning = "warning"
 
+// ExistingSpec is the policy for a source file this template has already produced
+// output for. It carries exactly the fields as the filter's "被排除文件的处理"
+// block, and means exactly the same thing: 留在原处 / 移动 / 复制, with the same
+// DestRule and rename template behind it.
+//
+// It acts on the SOURCE file, never on the output. Running the same template over
+// the same folder a second time is the case it exists for, and re-encoding files
+// that are already done is the thing worth avoiding -- so a repeat pass does not
+// reach ffmpeg at all.
+type ExistingSpec struct {
+	Action    string   `json:"action"` // "" (留在原处) | move | copy
+	Dest      DestRule `json:"dest"`
+	Pattern   string   `json:"pattern,omitempty"`
+	Overwrite bool     `json:"overwrite"`
+}
+
+// Moves reports whether the source file is relocated rather than left where it
+// is. The destination has to be usable, or there is nowhere to put it.
+func (e ExistingSpec) Moves() bool {
+	return (e.Action == ActionMove || e.Action == ActionCopy) && e.Dest.Usable()
+}
+
 // ---------------------------------------------------------------------------
 // Global template
 // ---------------------------------------------------------------------------
@@ -206,11 +244,19 @@ func DefaultGlobalTemplate() Template {
 	// The directory already carries the suffix, so the file name is left alone:
 	// /video/mmd/a.mp4 -> /video/mmd_out/a.mp4. Adding "_out" to the name as well
 	// would just be noise on top of the new directory.
-	t.OutPattern = "{name}.{ext}"
-	t.OutConflict = ConflictRename
+	//
+	// The pattern is the file *name*: no {ext} here. The extension comes from the
+	// container (or from the source when no container is chosen) and is appended
+	// by ResolveOutput, so a naming template never has to spell it out.
+	t.OutPattern = "{name}"
 	t.OutputOverride = true
 
 	t.Perf = &PerfSpec{Concurrency: 1, LogLevel: "warning", RetryCount: 0}
+
+	// Left nil on purpose. A non-nil section always skips an already-processed
+	// file, so shipping one would silently turn every template into "never process
+	// the same file twice" -- a behaviour change nobody asked for. nil is the
+	// "feature is off" state: a template opts in by opening the section.
 
 	t.Filter = &FilterSpec{Action: ActionKeep}
 	t.Filter.Dest = DestRule{Mode: OutputCustom}
@@ -244,9 +290,9 @@ func GlobalOrDefault(list []Template) Template {
 }
 
 // EnsureGlobal guarantees the list starts with a global template, creating one
-// from migrate when the file predates this feature. It reports whether anything
-// changed so the caller can persist.
-func EnsureGlobal(list []Template, migrate func() Template) ([]Template, bool) {
+// when the file has none. It reports whether anything changed so the caller can
+// persist.
+func EnsureGlobal(list []Template) ([]Template, bool) {
 	for i := range list {
 		if list[i].Global {
 			if i == 0 {
@@ -261,15 +307,6 @@ func EnsureGlobal(list []Template, migrate func() Template) ([]Template, bool) {
 		}
 	}
 	g := DefaultGlobalTemplate()
-	if migrate != nil {
-		g = migrate()
-		g.ID = GlobalTemplateID
-		g.Global = true
-		g.Builtin = false
-		if strings.TrimSpace(g.Name) == "" {
-			g.Name = GlobalTemplateName
-		}
-	}
 	g.Normalize()
 	return append([]Template{g}, list...), true
 }
@@ -294,7 +331,6 @@ func (t Template) Effective(global Template) Template {
 		out.OutDir = ""
 		out.OutSuffix = ""
 		out.OutPattern = ""
-		out.OutConflict = ""
 	}
 	// 段内再逐字段留空即回落：打开开关但没改的字段跟全局等价。
 	if strings.TrimSpace(out.OutMode) == "" {
@@ -309,12 +345,12 @@ func (t Template) Effective(global Template) Template {
 	if strings.TrimSpace(out.OutPattern) == "" {
 		out.OutPattern = global.OutPattern
 	}
-	if strings.TrimSpace(out.OutConflict) == "" {
-		out.OutConflict = global.OutConflict
-	}
 
 	if out.Perf == nil {
 		out.Perf = global.Perf
+	}
+	if out.Existing == nil {
+		out.Existing = global.Existing
 	}
 	if out.Filter == nil {
 		out.Filter = global.Filter
@@ -354,6 +390,14 @@ func CloneProblems(p *ProblemSpec) *ProblemSpec {
 	return &c
 }
 
+func CloneExisting(e *ExistingSpec) *ExistingSpec {
+	if e == nil {
+		return nil
+	}
+	c := *e
+	return &c
+}
+
 // NewFromGlobal seeds a new template from the global template's defaults. The
 // output naming is dropped on purpose: it now has its own "与全局不同" switch,
 // and a fresh template should start switched off — following the defaults —
@@ -361,127 +405,17 @@ func CloneProblems(p *ProblemSpec) *ProblemSpec {
 func NewFromGlobal(global Template) Template {
 	t := Template{ID: NewID(), Name: "", Description: ""}
 
-	// The three sections are copied, not shared, so editing the new template does
+	// The sections are copied, not shared, so editing the new template does
 	// not quietly rewrite the global one.
 	t.Perf = ClonePerf(global.Perf)
+	t.Existing = CloneExisting(global.Existing)
 	t.Filter = CloneFilter(global.Filter)
 	t.Problems = CloneProblems(global.Problems)
+	// Audio starts on "copy". Most jobs only want to re-encode the video, and a
+	// new template that silently re-encodes the audio as well is a worse default
+	// than one that leaves it alone: it costs time and cannot improve quality.
+	t.AudioMode = ModeCopy
 	return t
-}
-
-// ---------------------------------------------------------------------------
-// Migration from the pre-global-template settings layout
-// ---------------------------------------------------------------------------
-
-// LegacySettings is the set of settings that used to be global and now live in
-// the global template. It exists purely so an existing settings.json can be read
-// once and moved; NewGlobalFromLegacy reports whether there was anything to
-// move, and the caller then clears the legacy fields.
-func NewGlobalFromLegacy(s Settings) (Template, bool) {
-	g := DefaultGlobalTemplate()
-	moved := false
-
-	pick := func(cond bool) {
-		if cond {
-			moved = true
-		}
-	}
-
-	// 输出与命名
-	if s.LegacyOutputDirMode != "" {
-		g.OutMode = s.LegacyOutputDirMode
-	}
-	pick(s.LegacyOutputDir != "" || s.LegacyOutputSuffix != "" ||
-		s.LegacyNamePattern != "" || s.LegacyConflict != "")
-	if s.LegacyOutputDir != "" {
-		g.OutDir = s.LegacyOutputDir
-	}
-	if s.LegacyOutputSuffix != "" {
-		g.OutSuffix = s.LegacyOutputSuffix
-	}
-	if s.LegacyNamePattern != "" {
-		g.OutPattern = s.LegacyNamePattern
-	}
-	if s.LegacyConflict != "" {
-		g.OutConflict = s.LegacyConflict
-	}
-
-	// 处理性能
-	pick(s.LegacyConcurrency > 0 || s.LegacyLogLevel != "" ||
-		s.LegacyRetryCount > 0 || s.LegacyDeleteOnFail)
-	if g.Perf == nil {
-		g.Perf = &PerfSpec{}
-	}
-	if s.LegacyConcurrency > 0 {
-		g.Perf.Concurrency = s.LegacyConcurrency
-	}
-	if s.LegacyLogLevel != "" {
-		g.Perf.LogLevel = s.LegacyLogLevel
-	}
-	g.Perf.RetryCount = s.LegacyRetryCount
-	g.Perf.DeleteOnFail = s.LegacyDeleteOnFail
-
-	// 筛选与转移：TargetDir + MirrorTree 折叠成一个新的 DestRule。
-	f := s.LegacyFilters
-	if f != nil {
-		if f.Action != "" {
-			g.Filter.Action = f.Action
-		}
-		pick(f.TargetDir != "" || f.MirrorTree || f.RenamePattern != "" || f.Overwrite)
-		if f.TargetDir != "" {
-			mode := OutputCustom
-			if f.MirrorTree {
-				mode = OutputMirror
-			}
-			g.Filter.Dest = DestRule{Mode: mode, Dir: f.TargetDir, Suffix: DefaultOutputSuffix}
-		}
-		g.Filter.RenamePattern = f.RenamePattern
-		g.Filter.Overwrite = f.Overwrite
-		g.Filter.MinSizeMB = f.MinSizeMB
-		g.Filter.MaxSizeMB = f.MaxSizeMB
-		g.Filter.MinDuration = f.MinDuration
-		g.Filter.MaxDuration = f.MaxDuration
-		g.Filter.MinLongEdge = f.MinLongEdge
-		g.Filter.MaxLongEdge = f.MaxLongEdge
-		g.Filter.IncludeExts = normalizeExts(f.IncludeExts)
-		g.Filter.ExcludeExts = normalizeExts(f.ExcludeExts)
-	}
-
-	// 错误与警告：旧实现固定按镜像目录处理，所以迁移时保持 mirror。
-	if s.LegacyOnErrorAction != "" {
-		g.Problems.ErrorAction = s.LegacyOnErrorAction
-	}
-	if s.LegacyOnWarningAction != "" {
-		g.Problems.WarningAction = s.LegacyOnWarningAction
-	}
-	pick(s.LegacyOnErrorDir != "" || s.LegacyOnWarningDir != "")
-	if s.LegacyOnErrorDir != "" {
-		g.Problems.ErrorDest = DestRule{Mode: OutputMirror, Dir: s.LegacyOnErrorDir, Suffix: DefaultOutputSuffix}
-	}
-	if s.LegacyOnWarningDir != "" {
-		g.Problems.WarningDest = DestRule{Mode: OutputMirror, Dir: s.LegacyOnWarningDir, Suffix: DefaultOutputSuffix}
-	}
-
-	return g, moved
-}
-
-// ClearLegacy drops the migrated settings so the next save does not write them
-// back into settings.json.
-func (s *Settings) ClearLegacy() {
-	s.LegacyOutputDirMode = ""
-	s.LegacyOutputDir = ""
-	s.LegacyOutputSuffix = ""
-	s.LegacyNamePattern = ""
-	s.LegacyConflict = ""
-	s.LegacyConcurrency = 0
-	s.LegacyLogLevel = ""
-	s.LegacyRetryCount = 0
-	s.LegacyDeleteOnFail = false
-	s.LegacyOnErrorAction = ""
-	s.LegacyOnErrorDir = ""
-	s.LegacyOnWarningAction = ""
-	s.LegacyOnWarningDir = ""
-	s.LegacyFilters = nil
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +466,7 @@ func ResolveDestDir(req DestRequest) (string, error) {
 	case OutputMirror:
 		root := strings.TrimSpace(req.Rule.Dir)
 		if root == "" {
-			return "", fmt.Errorf("已选择「指定目录 + 保持子目录结构」，但目录为空")
+			return "", fmt.Errorf("已选择「指定目录（源目录结构）」，但目录为空")
 		}
 		if rel := subDir(); rel != "" {
 			return filepath.Join(root, rel), nil

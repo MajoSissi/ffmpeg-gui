@@ -63,7 +63,7 @@ export function PickDirectory():Promise<string>;
 
 export function PreviewCommand(arg1:string,arg2:string):Promise<engine.Plan>;
 
-export function PreviewQueue(arg1:string):Promise<Array<main.PreviewItem>>;
+export function PreviewTemplate(arg1:store.Template,arg2:string):Promise<engine.Plan>;
 
 export function Probe(arg1:string):Promise<media.Info>;
 
@@ -93,11 +93,9 @@ export function SaveSettings(arg1:store.Settings):Promise<store.Settings>;
 
 export function SaveTemplate(arg1:store.Template):Promise<store.Template>;
 
-export function SetAllTemplates(arg1:string):Promise<number>;
+export function SetAllTemplates(arg1:string):Promise<engine.ApplyResult>;
 
 export function SetJobTemplate(arg1:string,arg2:string):Promise<void>;
-
-export function SetQueueFilter(arg1:store.FilterSpec):Promise<void>;
 
 export function Settings():Promise<store.Settings>;
 

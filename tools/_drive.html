@@ -55,6 +55,7 @@ f.addEventListener('load', function () {
       '.tpl-row__grip',
       '[data-sec="perf"]',
       '[data-sec="output"]',
+      '[data-sec="existing"]',
       '[data-sec="filter"]',
       '[data-sec="problems"]',
       '.follow',
@@ -63,7 +64,24 @@ f.addEventListener('load', function () {
       'input[name="logMaxSizeMB"]',
       'input[name="logKeepDays"]',
       '[data-act="preview"]',
+      // The editor's own selects: a section that renders but with no options is
+      // indistinguishable from one that rendered correctly, from a screenshot.
+      'select[name="exAction"]',
+      'select[name="exDestMode"]',
+      'select[name="outMode"]',
+      'select[name="fAction"]',
+      'select[name="prErrorAction"]',
     ];
+    // Report what each select actually offers. "跟随全局设置" used to sit next to
+    // the 与全局不同 switch, which is two controls for one state; a count plus the
+    // option list is the only way to prove it is gone.
+    var selLines = ['exAction', 'exDestMode', 'outMode', 'fAction', 'prErrorAction'].map(function (n) {
+      var s = d.querySelector('select[name="' + n + '"]');
+      if (!s) return '   -  ' + n + ' (absent)';
+      return '   ' + String(s.options.length) + '  ' + n + ': '
+        + Array.from(s.options).map(function (o) { return o.value; }).join('|')
+        + '  → ' + s.value;
+    });
     const lines = probeSels.map(function (s) {
       return String(d.querySelectorAll(s).length).padStart(3) + '  ' + s;
     });
@@ -75,7 +93,8 @@ f.addEventListener('load', function () {
       'landed on: page=' + (active ? active.dataset.page : '?')
       + ' label=' + label + '\n' +
       'mock active: ' + (typeof d.defaultView.go === 'undefined' ? 'yes (no window.go)' : 'no, real bindings') + '\n\n' +
-      'matches in the app document:\n' + lines.join('\n') + '</pre>';
+      'matches in the app document:\n' + lines.join('\n')
+      + '\n\nselect options (value list → current):\n' + selLines.join('\n') + '</pre>';
   }
 
   setTimeout(() => {
@@ -105,7 +124,6 @@ f.addEventListener('load', function () {
           if (s) s.scrollTop = Number(p.get('to') || 1200);
         }
         setTimeout(() => {
-          if (modal === 'cmd') click('[data-act="preview-command"]');
           if (modal === 'detail') click('.tab[data-tab="running"]');
           if (modal === 'command') click('.tab[data-tab="command"]');
           if (modal === 'tplpreview') click('[data-act="preview"]');

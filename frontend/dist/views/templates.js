@@ -5,6 +5,7 @@ import {
 } from '../ui.js';
 import {
   SECTIONS, sectionHead, followHint, perfBody, filterBody, problemsBody, outputBody,
+  containerField, existingBody,
 } from './sections.js';
 
 const GLOBAL_ID = 't-global';
@@ -30,7 +31,6 @@ export function createTemplatesView(ctx) {
           <input class="input" placeholder="搜索模板" data-role="search">
         </div>
         <div class="tpl-list__items" data-role="list"></div>
-        <div class="hint tpl-list__tip">拖动可排序 · 右键更多操作</div>
       </aside>
       <div class="editor">
         <div class="editor__body" data-role="form"></div>
@@ -143,7 +143,6 @@ export function createTemplatesView(ctx) {
           <span class="hint">${d.builtin ? '内置模板，可直接修改后保存' : '自定义模板'}</span></div>
         <div class="grid grid--2">
           ${field('模板名称', `<input class="input" name="name" value="${esc(d.name || '')}" placeholder="例如：4K 长边转 2K">`)}
-          ${field('输出容器', selectHtml('container', o.containers || [], d.container || ''), '留空表示沿用源文件的容器')}
           ${field('说明', `<input class="input" name="description" value="${esc(d.description || '')}" placeholder="一句话描述这个模板的用途">`, '会显示在队列与记录中', 'span-2')}
         </div>
       </div>`}
@@ -159,7 +158,7 @@ ${g ? '' : `      <div class="section">
           ], d.videoMode || 'encode'))}
           ${field('编码器', selectHtml('videoCodec', o.videoCodecs || [], d.videoCodec || ''), '', 'span-2')}
           ${field('码率控制', selectHtml('rateControl', o.rateControls || [], d.rateControl || 'crf'))}
-          ${field('CRF / 质量值', `<input class="input" type="number" min="0" max="51" name="crf" value="${d.crf > 0 ? d.crf : ''}" placeholder="留空 = ffmpeg 默认">`, '常用 18~28；留空则不传 -crf，libx264/x265 默认 23')}
+          ${field('CRF / 质量值', `<input class="input" type="number" min="0" max="51" name="crf" value="${d.crf > 0 ? d.crf : ''}" placeholder="留空 = 默认">`, '常用 18~28；留空则不传 -crf，libx264/x265 默认 23')}
           ${field('目标码率', `<input class="input" name="videoBitrate" value="${esc(d.videoBitrate || '')}" placeholder="如 4000k">`)}
           ${field('峰值码率', `<input class="input" name="maxRate" value="${esc(d.maxRate || '')}" placeholder="如 5000k">`)}
           ${field('缓冲大小', `<input class="input" name="bufSize" value="${esc(d.bufSize || '')}" placeholder="如 8000k">`)}
@@ -168,24 +167,24 @@ ${g ? '' : `      <div class="section">
           ${field('Profile', `<input class="input" name="profile" value="${esc(d.profile || '')}" placeholder="high / main">`)}
           ${field('Level', `<input class="input" name="level" value="${esc(d.level || '')}" placeholder="4.1">`)}
           ${field('像素格式', `<input class="input" name="pixFmt" value="${esc(d.pixFmt || '')}" placeholder="yuv420p">`, '兼容性优先用 yuv420p', 'span-2')}
-          ${field('帧率 fps', `<input class="input" name="fps" value="${esc(d.fps || '')}" placeholder="留空保持原始">`, '例如 30 / 24000/1001', 'span-2')}
+          ${field('帧率 fps', `<input class="input" name="fps" value="${esc(d.fps || '')}" placeholder="留空 = 保持原样">`, '例如 30 / 24000/1001', 'span-2')}
         </div>
       </div>
 
       <div class="section">
         <div class="section__head">${icon('crop', 'sm')}<h3>分辨率</h3><div class="spacer"></div>
-          <span class="hint">锁定长边可自动适配横屏与竖屏</span></div>
+          <span class="hint">锁定长边或短边时，另一边交给 ffmpeg 按比例计算</span></div>
         <div class="grid grid--4">
           ${field('缩放方式', selectHtml('resizeMode', o.resizeModes || [], r.mode || 'keep'))}
-          ${field('长边', `<input class="input" type="number" name="longEdge" value="${r.longEdge ?? 2560}" placeholder="2560 = 2K">`, '较长的一边固定为该值')}
-          ${field('短边', `<input class="input" type="number" name="shortEdge" value="${r.shortEdge ?? 1080}" placeholder="1080">`)}
-          ${field('缩放算法', selectHtml('algorithm', o.scaleAlgorithms || [], r.algorithm || 'lanczos'))}
-          ${field('宽', `<input class="input" type="number" name="width" value="${r.width ?? 0}" placeholder="0 = 自动">`)}
-          ${field('高', `<input class="input" type="number" name="height" value="${r.height ?? 0}" placeholder="0 = 自动">`)}
+          ${field('长边', `<input class="input" type="number" name="longEdge" value="${r.longEdge ?? 2560}" placeholder="2560 = 2K">`, '较长的一边固定为该值，另一边由 ffmpeg 自动算出')}
+          ${field('短边', `<input class="input" type="number" name="shortEdge" value="${r.shortEdge ?? 1080}" placeholder="1080">`, '较短的一边固定为该值，另一边由 ffmpeg 自动算出')}
+          ${field('缩放算法', selectHtml('algorithm', o.scaleAlgorithms || [], r.algorithm || ''), '留空则不写 :flags=，由 ffmpeg 决定')}
+          ${field('宽', `<input class="input" type="number" name="width" value="${r.width ?? 0}" placeholder="0 = 自动（按比例）">`)}
+          ${field('高', `<input class="input" type="number" name="height" value="${r.height ?? 0}" placeholder="0 = 自动（按比例）">`)}
           ${field('最大宽', `<input class="input" type="number" name="maxWidth" value="${r.maxWidth ?? 0}" placeholder="0 = 不限">`)}
           ${field('最大高', `<input class="input" type="number" name="maxHeight" value="${r.maxHeight ?? 0}" placeholder="0 = 不限">`)}
           ${field('缩放比例 %', `<input class="input" type="number" name="percent" value="${r.percent ?? 50}" placeholder="50">`)}
-          ${field('对齐倍数', `<input class="input" type="number" name="multipleOf" value="${r.multipleOf ?? 2}" placeholder="2">`, '宽高自动取整到该倍数')}
+          ${field('对齐倍数', `<input class="input" type="number" name="multipleOf" value="${r.multipleOf ?? 2}" placeholder="2">`, '另一边自动取整到该倍数（scale 里的 -N）')}
           ${field('补边颜色', selectHtml('padColor', o.padColors || [], r.padColor || 'black'))}
         </div>
         <div class="grid grid--3" style="margin-top:10px">
@@ -204,8 +203,8 @@ ${g ? '' : `      <div class="section">
           ], d.audioMode || 'encode'))}
           ${field('编码器', selectHtml('audioCodec', o.audioCodecs || [], d.audioCodec || ''))}
           ${field('码率', `<input class="input" name="audioBitrate" value="${esc(d.audioBitrate || '')}" placeholder="192k">`)}
-          ${field('声道数', `<input class="input" type="number" name="audioChannels" value="${d.audioChannels ?? 0}" placeholder="0 = 保持">`)}
-          ${field('采样率', `<input class="input" type="number" name="sampleRate" value="${d.sampleRate ?? 0}" placeholder="0 = 保持">`)}
+          ${field('声道数', `<input class="input" type="number" name="audioChannels" value="${d.audioChannels ?? 0}" placeholder="0 = 保持原样">`)}
+          ${field('采样率', `<input class="input" type="number" name="sampleRate" value="${d.sampleRate ?? 0}" placeholder="0 = 保持原样">`)}
         </div>
       </div>
 
@@ -213,13 +212,16 @@ ${g ? '' : `      <div class="section">
         <div class="section__head">${icon('queue', 'sm')}<h3>容器与流</h3><div class="spacer"></div>
           <span class="hint">勾选项才会写进命令</span></div>
         <div class="grid grid--3">
-          <label class="check"><input type="checkbox" name="mapAll"${d.mapAll ? ' checked' : ''}>保留全部流（含字幕、多音轨）</label>
+          <label class="check" title="未勾选时命令里会出现 -sn"><input type="checkbox" name="mapAll"${d.mapAll ? ' checked' : ''}>保留全部流（字幕、多音轨、附件）</label>
           <label class="check"><input type="checkbox" name="fastStart"${d.fastStart ? ' checked' : ''}>faststart（MP4 网页快速起播）</label>
           <label class="check"><input type="checkbox" name="stripMetadata"${d.stripMetadata ? ' checked' : ''}>清除元数据</label>
           <label class="check"><input type="checkbox" name="stripChapters"${d.stripChapters ? ' checked' : ''}>清除章节</label>
         </div>
+        <div class="hint" style="margin-top:10px">${icon('info', 'sm')} <span class="mono">-sn</span> 就是「排除字幕」，
+          来自上面<strong>未勾选</strong>「保留全部流」——此时只保留一路视频 + 一路音频。
+          勾选后改为 <span class="mono">-map 0</span> 并写入 <span class="mono">-c:s</span>（MP4 用 mov_text、MKV 用 copy）。</div>
         <div class="grid grid--3" style="margin-top:10px">
-          ${field('混流队列上限', `<input class="input" type="number" min="0" name="maxMuxQueue" value="${d.maxMuxQueue > 0 ? d.maxMuxQueue : ''}" placeholder="留空 = ffmpeg 默认">`,
+          ${field('混流队列上限', `<input class="input" type="number" min="0" name="maxMuxQueue" value="${d.maxMuxQueue > 0 ? d.maxMuxQueue : ''}" placeholder="留空 = 默认">`,
             '仅在报「Too many packets buffered」时填写，例如 2048')}
         </div>
       </div>
@@ -254,8 +256,9 @@ ${g ? '' : `      <div class="section">
       </div>
 
 `}
-${inheritableSection('perf', d, g, o, (s) => perfBody(s, o, ctx.state.runtime?.cpus || 8))}
-${inheritableSection('output', d, g, o, (t) => outputBody(t, o))}
+${inheritableSection('perf', d, g, o, (s) => perfBody(s, o, ctx.state.runtime?.cpus || 0))}
+${inheritableSection('output', d, g, o, (t) => outputBody(t, o, globalTemplate()))}
+${inheritableSection('existing', d, g, o, existingBody)}
 ${inheritableSection('filter', d, g, o, filterBody)}
 ${inheritableSection('problems', d, g, o, problemsBody)}
 `;
@@ -274,8 +277,18 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
   // the caption into decoration nobody read twice.
   function inheritableSection(key, d, g, o, body) {
     const active = g || !!d[key] || (key === 'output' && !!d.outputOverride);
+    // 输出格式 is decided per template rather than inherited, so it stays editable
+    // even while the rest of the section is following the global one. Hiding it
+    // behind the switch would take away the one control most templates need. When
+    // the section IS expanded the body renders it next to 命名模板, so the
+    // standalone row only exists in the follow state -- otherwise the same select
+    // would appear twice and the two copies would drift apart.
+    const own = key === 'output' && !g && !active
+      ? `<div class="grid grid--2">${containerField(d, o)}</div>`
+      : '';
     return `<div class="section">
       ${sectionHead(key, active, { global: g })}
+      ${own}
       ${active ? body(sectionValue(key, d), o) : `<div class="follow">${icon('swap', 'sm')}${esc(followHint(key, globalTemplate()))}</div>`}
     </div>`;
   }
@@ -335,10 +348,9 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
             draft.outDir = g.outDir || '';
             draft.outSuffix = g.outSuffix || '';
             draft.outPattern = g.outPattern || '';
-            draft.outConflict = g.outConflict || '';
           } else {
             draft.outputOverride = false;
-            for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern', 'outConflict']) delete draft[k];
+            for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern']) delete draft[k];
           }
         } else if (c.checked) {
           draft[key] = seedSection(key, globalTemplate());
@@ -387,6 +399,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         collectArgs('in'); collectArgs('out');
       });
     });
+    refreshEnabled();
   }
 
   /**
@@ -404,7 +417,6 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         outputOverride: true,
         outMode: src.outMode || '', outDir: src.outDir || '',
         outSuffix: src.outSuffix || '', outPattern: src.outPattern || '',
-        outConflict: src.outConflict || '',
       };
     }
     if (key === 'perf') {
@@ -415,6 +427,15 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         retryCount: p.retryCount || 0,
         idlePriority: !!p.idlePriority,
         deleteOnFail: !!p.deleteOnFail,
+      };
+    }
+    if (key === 'existing') {
+      const e = (src.existing || {});
+      return {
+        action: e.action || 'keep',
+        dest: { ...(e.dest || { mode: '', dir: '', suffix: '' }) },
+        pattern: e.pattern || '',
+        overwrite: !!e.overwrite,
       };
     }
     if (key === 'filter') {
@@ -434,20 +455,23 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     return {
       errorAction: p.errorAction || 'keep',
       errorDest: { ...(p.errorDest || { mode: '', dir: '', suffix: '' }) },
+      errorPattern: p.errorPattern || '',
       warningAction: p.warningAction || 'mark',
       warningDest: { ...(p.warningDest || { mode: '', dir: '', suffix: '' }) },
+      warningPattern: p.warningPattern || '',
     };
   }
 
-  /** Every field name that belongs to one of the four inheritable sections. */
+  /** Every field name that belongs to one of the inheritable sections. */
   const SECTION_FIELDS = {
     perf: ['pConcurrency', 'pThreads', 'pRetryCount', 'pLogLevel', 'pIdlePriority', 'pDeleteOnFail'],
-    output: ['outMode', 'outDir', 'outSuffix', 'outPattern', 'outConflict'],
+    output: ['outMode', 'outDir', 'outSuffix', 'outPattern'],
+    existing: ['exAction', 'exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
     filter: ['fMinSizeMB', 'fMaxSizeMB', 'fMinDuration', 'fMaxDuration', 'fMinLongEdge', 'fMaxLongEdge',
       'fIncludeExts', 'fExcludeExts', 'fAction', 'fDestMode', 'fDestDir', 'fDestSuffix',
       'fRenamePattern', 'fOverwrite'],
-    problems: ['prErrorAction', 'prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix',
-      'prWarningAction', 'prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix'],
+    problems: ['prErrorAction', 'prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern',
+      'prWarningAction', 'prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
   };
 
   function sectionOf(name) {
@@ -457,7 +481,122 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     return null;
   }
 
+  // The resize fields Go unmarshals into numbers. Every control hands over a
+  // string, and sending "2560" for longEdge fails to unmarshal into an int --
+  // that is exactly how saving a template came to report
+  // `cannot unmarshal string into Go struct field Template.resize.longEdge`.
+  const RESIZE_NUMBERS = new Set(['longEdge', 'shortEdge', 'width', 'height',
+    'maxWidth', 'maxHeight', 'percent', 'multipleOf']);
+
+  function resizeValue(key, v) {
+    return RESIZE_NUMBERS.has(key) ? Number(v || 0) : v;
+  }
+
+  /**
+   * Which fields a selector turns on.
+   *
+   * A resize mode that only reads 长边 should not offer six more boxes that do
+   * nothing -- they look usable and are silently ignored, which is how a template
+   * ends up "configured" with values that never reach the command. Each rule maps
+   * the controlling field's value to the fields it enables; a field named by more
+   * than one rule is enabled only when every rule that mentions it allows it.
+   *
+   * refreshEnabled() applies these by toggling `disabled` rather than re-rendering
+   * the form: a full re-render on every mode switch would steal the focus and cut
+   * off whatever was being typed.
+   */
+  const ENABLED_BY = {
+    resizeMode: {
+      keep: ['algorithm', 'multipleOf'],
+      longedge: ['longEdge', 'onlyLarger', 'algorithm', 'multipleOf'],
+      shortedge: ['shortEdge', 'onlyLarger', 'algorithm', 'multipleOf'],
+      exact: ['width', 'height', 'padToTarget', 'padColor', 'algorithm', 'multipleOf'],
+      fit: ['maxWidth', 'maxHeight', 'algorithm', 'multipleOf'],
+      percent: ['percent', 'onlyLarger', 'algorithm', 'multipleOf'],
+    },
+    videoMode: {
+      encode: ['videoCodec', 'rateControl', 'crf', 'videoBitrate', 'maxRate', 'bufSize',
+        'preset', 'tune', 'profile', 'level', 'pixFmt', 'fps'],
+      // Copying or dropping the video stream leaves nothing to configure: every
+      // encoder option is skipped, and the -vf chain (fps included) never runs.
+      copy: [],
+      disable: [],
+    },
+    rateControl: {
+      crf: ['crf', 'maxRate', 'bufSize'],
+      qp: ['crf', 'maxRate', 'bufSize'],
+      bitrate: ['videoBitrate', 'maxRate', 'bufSize'],
+    },
+    audioMode: {
+      encode: ['audioCodec', 'audioBitrate', 'audioChannels', 'sampleRate'],
+      copy: [],
+      disable: [],
+    },
+    outMode: {
+      same: [], sibling: ['outSuffix'], custom: ['outDir'], mirror: ['outDir'],
+    },
+    // The destination only means anything once the action moves or copies the
+    // file; 「留在原处」 would leave every one of these fields silently ignored.
+    exAction: {
+      keep: [],
+      move: ['exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
+      copy: ['exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
+    },
+    exDestMode: {
+      same: [], sibling: ['exDestSuffix'], custom: ['exDestDir'], mirror: ['exDestDir'],
+    },
+    fAction: {
+      keep: [],
+      move: ['fDestMode', 'fDestDir', 'fDestSuffix', 'fRenamePattern', 'fOverwrite'],
+      copy: ['fDestMode', 'fDestDir', 'fDestSuffix', 'fRenamePattern', 'fOverwrite'],
+    },
+    fDestMode: {
+      same: [], sibling: ['fDestSuffix'], custom: ['fDestDir'], mirror: ['fDestDir'],
+    },
+    prErrorAction: {
+      keep: [], mark: [],
+      move: ['prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern'],
+      copy: ['prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern'],
+    },
+    prErrorDestMode: {
+      same: [], sibling: ['prErrorDestSuffix'], custom: ['prErrorDestDir'], mirror: ['prErrorDestDir'],
+    },
+    prWarningAction: {
+      keep: [], mark: [],
+      move: ['prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
+      copy: ['prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
+    },
+    prWarningDestMode: {
+      same: [], sibling: ['prWarningDestSuffix'], custom: ['prWarningDestDir'], mirror: ['prWarningDestDir'],
+    },
+  };
+
+  /** Grey out everything the current selections make irrelevant. */
+  function refreshEnabled() {
+    const allowed = new Map();
+    for (const [ctrl, map] of Object.entries(ENABLED_BY)) {
+      const box = formEl.querySelector(`[name="${ctrl}"]`);
+      if (!box) continue;
+      const on = new Set(Object.hasOwn(map, box.value) ? map[box.value] : []);
+      for (const n of new Set([].concat(...Object.values(map)))) {
+        allowed.set(n, allowed.has(n) ? allowed.get(n) && on.has(n) : on.has(n));
+      }
+    }
+    for (const [n, ok] of allowed) {
+      const c = formEl.querySelector(`[name="${n}"]`);
+      if (!c) continue;
+      c.disabled = !ok;
+      const box = c.closest('.field') || c.closest('.check');
+      if (box) box.classList.toggle('is-disabled', !ok);
+    }
+  }
+
   function onFieldChange(e) {
+    applyFieldChange(e);
+    refreshEnabled();
+  }
+
+  function applyFieldChange(e) {
     const n = e.target.name;
     const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     if (!n || !draft) return;
@@ -467,7 +606,11 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     if (resizeFields.includes(n)) {
       draft.resize = draft.resize || {};
       const key = n === 'resizeMode' ? 'mode' : n;
-      draft.resize[key] = v;
+      // Everything off a control arrives as a string, and Go's ResizeSpec wants
+      // real numbers -- sending "2560" fails to unmarshal into an int, which is
+      // how saving a template came to report `cannot unmarshal string into
+      // Template.resize.longEdge`. Checkboxes already give a bool.
+      draft.resize[key] = e.target.type === 'checkbox' ? v : resizeValue(key, v);
       if (!draft.resize.multipleOf) draft.resize.multipleOf = 2;
       markDirty();
       return;
@@ -507,6 +650,15 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       else if (name === 'pDeleteOnFail') s.deleteOnFail = v;
       return;
     }
+    if (sec === 'existing') {
+      switch (name) {
+        case 'exAction': s.action = v; break;
+        case 'exPattern': s.pattern = v; break;
+        case 'exOverwrite': s.overwrite = v; break;
+        default: s.dest = { ...(s.dest || {}), [destKey(name)]: v };
+      }
+      return;
+    }
     if (sec === 'filter') {
       switch (name) {
         case 'fMinSizeMB': s.minSizeMB = num(v); break;
@@ -528,6 +680,8 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     const d = isError ? (s.errorDest = s.errorDest || {}) : (s.warningDest = s.warningDest || {});
     if (name === 'prErrorAction') s.errorAction = v;
     else if (name === 'prWarningAction') s.warningAction = v;
+    else if (name === 'prErrorPattern') s.errorPattern = v;
+    else if (name === 'prWarningPattern') s.warningPattern = v;
     else d[destKey(name)] = v;
   }
 
@@ -634,9 +788,11 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         ...(await ctx.api.newTemplate()),
         name: '新模板', description: '', container: '', videoMode: 'encode', videoCodec: 'libx264',
         rateControl: 'crf', crf: 23, preset: 'medium', pixFmt: 'yuv420p',
-        resize: { mode: 'keep', multipleOf: 2, algorithm: 'lanczos' },
-        audioMode: 'encode', audioCodec: 'aac', audioBitrate: '192k', fastStart: true,
-        perf: null, filter: null, problems: null, outputOverride: false,
+        resize: { mode: 'keep', multipleOf: 2, algorithm: '' },
+        // Copy the audio by default. Most jobs only want to re-encode the video;
+        // re-encoding audio as well costs time and cannot make it sound better.
+        audioMode: 'copy', audioCodec: '', audioBitrate: '', fastStart: true,
+        perf: null, existing: null, filter: null, problems: null, outputOverride: false,
       });
       // Same as duplicate: the backend broadcasts the new list, so only fall back to
       // pushing when the broadcast has not landed yet.
@@ -678,11 +834,11 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       // A section that is following the global template is saved empty, so the file
       // cannot disagree with the switch: turn the switch on later and the old values
       // would otherwise silently come back.
-      for (const k of ['perf', 'filter', 'problems']) {
+      for (const k of ['perf', 'existing', 'filter', 'problems']) {
         if (payload[k] == null) delete payload[k];
       }
       if (!isGlobal() && !payload.outputOverride) {
-        for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern', 'outConflict']) delete payload[k];
+        for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern']) delete payload[k];
       }
       if (act === 'save-as') {
         payload.id = '';
@@ -799,9 +955,12 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     // Preview with variables instead of a sample path: this page describes the
     // template, and both the input and the output are decided per file. The task
     // page has its own preview that resolves real paths for the current queue.
+    // Send the draft itself, not its id: the id would come back with the *saved*
+    // copy of the template, so every unsaved edit in the form would be missing
+    // from the command the preview claims to describe.
     let plan;
     try {
-      plan = await ctx.api.previewCommand(draft.id, '');
+      plan = await ctx.api.previewTemplate(draft, '');
     } catch (err) {
       plan = { command: '', warnings: [err.message || String(err)] };
     }

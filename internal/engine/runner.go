@@ -153,6 +153,12 @@ type Runner struct {
 	emit     func(name string, payload any)
 	onRecord func(store.Record)
 
+	// armed is "the user pressed 开始". Workers exist as soon as a template is
+	// loaded so the pool is warm, but they must not touch a job until then --
+	// otherwise dropping a file onto the window starts encoding it, and there is
+	// no way back short of pressing 停止. paused is a different thing entirely:
+	// the queue was started and is being held back on purpose.
+	armed     bool
 	paused    bool
 	stopping  bool
 	workers   int
@@ -168,30 +174,6 @@ type Runner struct {
 
 	probing     bool
 	probeCancel context.CancelFunc
-
-	// queueFilter overrides the template's filter rules for the whole queue. It is
-	// nil when the user is not overriding anything. This is the highest-precedence
-	// filter: the task page exposes it because "this batch, these files only" is a
-	// decision about the queue, not about the template, and forcing the user to edit
-	// the template (and every other queue that shares it) would be wrong.
-	queueFilter *store.FilterSpec
-}
-
-// SetQueueFilter installs (or clears, with nil) the queue-level filter override.
-// A non-nil spec replaces the template rules outright rather than merging with them:
-// the panel shows one set of numbers, and a half-merged rule set would not describe
-// what would actually run.
-func (r *Runner) SetQueueFilter(f *store.FilterSpec) {
-	r.mu.Lock()
-	r.queueFilter = f
-	r.mu.Unlock()
-}
-
-// queueFilterSpec returns the override, or nil when there is none.
-func (r *Runner) queueFilterSpec() *store.FilterSpec {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.queueFilter
 }
 
 // NewRunner creates an idle runner.
@@ -215,6 +197,17 @@ func (r *Runner) Configure(p Providers, emit func(string, any), onRecord func(st
 	r.mu.Unlock()
 }
 
+// Providers returns the configured providers, or nil before Configure.
+func (r *Runner) Providers() *Providers {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prov.Settings == nil && r.prov.Template == nil {
+		return nil
+	}
+	p := r.prov
+	return &p
+}
+
 // Shutdown stops every worker and releases the sleep inhibitor.
 func (r *Runner) Shutdown() {
 	r.slots.stop()
@@ -223,6 +216,10 @@ func (r *Runner) Shutdown() {
 	r.cancelAll()
 	r.cond.Broadcast()
 	r.mu.Unlock()
+	// Frozen processes first: cancelling their context only closes the pipes, and
+	// a suspended ffmpeg cannot act on that. Without this the user quits the app
+	// and finds an orphan ffmpeg.exe still holding the output file.
+	r.killSuspended()
 	r.keepAwake.Disable()
 }
 
@@ -266,6 +263,15 @@ func (r *Runner) AddInputs(items []InputItem, templateID, templateName string) (
 			continue
 		}
 		if !st.IsDir() {
+			// A file named outright used to skip the extension check that a
+			// scanned directory applies, so dragging a .zip onto the window put
+			// a job in the queue that ffmpeg could never open: it counted
+			// towards the totals but had nothing to show. Same gate, same
+			// message, whether the file was walked or named.
+			if !isMediaFile(p) {
+				errs = append(errs, fmt.Sprintf("%s: 不是媒体文件，已跳过", filepath.Base(p)))
+				continue
+			}
 			added = append(added, NewJob(p, filepath.Dir(p), templateID, templateName))
 			continue
 		}
@@ -323,6 +329,11 @@ func (r *Runner) AddInputs(items []InputItem, templateID, templateName string) (
 			continue
 		}
 		seen[strings.ToLower(j.Input)] = true
+		// 1-based position across the whole queue, so {index} keeps counting up
+		// across several adds and stays put when a job is removed. The queue
+		// preview reads the same field, which is what keeps the two commands
+		// identical instead of merely similar.
+		j.Index = len(r.jobs) + 1
 		r.jobs = append(r.jobs, j)
 		r.index[j.ID] = j
 		n++
@@ -509,26 +520,42 @@ func (r *Runner) UpdateJobTemplate(id, templateID, templateName string) error {
 	return nil
 }
 
-// UpdateAllTemplates re-points every not-yet-finished job at another template.
-func (r *Runner) UpdateAllTemplates(templateID, templateName string) int {
+// UpdateAllTemplates re-points the whole queue at another template.
+//
+// The toolbar binds the queue to one template, so switching it has to move every
+// row -- including the ones that already ran. Those go back to 排队中 (the same
+// rule UpdateJobTemplate applies to a single job), otherwise a finished result
+// would sit there built from parameters that are no longer anywhere on screen.
+// Jobs already on the CPU keep the template they started with: re-pointing them
+// mid-flight would only produce a half-old, half-new output file.
+func (r *Runner) UpdateAllTemplates(templateID, templateName string) ApplyResult {
+	var res ApplyResult
 	r.mu.Lock()
-	n := 0
 	for _, j := range r.jobs {
-		if j.Status.Finished() {
+		if j.Status == StatusRunning || j.Status == StatusPreparing {
 			continue
 		}
 		j.lock()
 		j.TemplateID = templateID
 		j.TemplateName = templateName
+		if j.Status.Finished() {
+			j.Status = StatusPending
+			j.Progress = 0
+			j.Message = "排队中"
+			j.Error = ""
+			j.Warnings = nil
+			j.LogTail = nil
+			res.Requeued++
+		}
 		j.unlock()
-		n++
+		res.Applied++
 	}
 	r.cond.Broadcast()
 	r.mu.Unlock()
-	if n > 0 {
+	if res.Applied > 0 {
 		r.emitState()
 	}
-	return n
+	return res
 }
 
 // ResetFailed re-queues every failed or cancelled job.
@@ -563,7 +590,8 @@ func (r *Runner) ResetFailed() int {
 // Execution control
 // ---------------------------------------------------------------------------
 
-// Start ensures enough workers exist and un-pauses the queue.
+// Start begins processing: it arms the queue and releases any pause. Pressing it
+// is the only thing that does -- adding files no longer starts work by itself.
 func (r *Runner) Start() {
 	r.mu.Lock()
 	r.ensureWorkersLocked(r.prov.ConcurrencyOrDefault())
@@ -571,10 +599,21 @@ func (r *Runner) Start() {
 		r.ctx, r.cancelAll = context.WithCancel(context.Background())
 		r.stopping = false
 	}
+	r.armed = true
 	r.paused = false
 	r.cond.Broadcast()
 	r.mu.Unlock()
 	r.slots.restart()
+	r.emitState()
+}
+
+// Disarm stops handing out jobs without touching the ones already running. It is
+// what 停止 uses to put the queue back in its initial state: a later Start then
+// means "go again" rather than resuming something the user never began.
+func (r *Runner) Disarm() {
+	r.mu.Lock()
+	r.armed = false
+	r.mu.Unlock()
 	r.emitState()
 }
 
@@ -595,40 +634,221 @@ func (r *Runner) ensureWorkersLocked(n int) {
 	}
 }
 
-// Pause stops handing out new jobs; running jobs finish normally.
+// Pause stops handing out new jobs AND freezes the ones already running.
+//
+// The freeze is the whole point: ffmpeg has no pause verb, so the only way to make
+// 暂停 mean "this file stops here and picks up from here" is to suspend the process
+// itself. Verified against a 1080p30 encode -- out_time_ms resumed 14s -> 22s and
+// the final file matched a control run exactly in size, so nothing is re-encoded
+// and nothing is lost.
+//
+// A process that cannot be frozen (it just exited, or Windows refused) is not an
+// error: it finishes on its own, which is exactly the old behaviour, so the user
+// gets a working pause either way. The failure is written to that job's log rather
+// than swallowed.
 func (r *Runner) Pause() {
 	r.mu.Lock()
 	r.paused = true
+	jobs := append([]*Job(nil), r.jobs...)
 	r.mu.Unlock()
+
+	for _, j := range jobs {
+		j.lock()
+		pid, already := j.pid, j.suspend != nil
+		j.unlock()
+		if pid <= 0 || already {
+			// pid <= 0 means still probing or already finished; an OS call on that
+			// pid would either fail or hit whatever process recycled the number.
+			//
+			// already means this job holds a handle. Pause is a button, not a
+			// toggle, and it can be pressed twice: suspending again would push the
+			// kernel's suspend count to 2 and the single Resume in 继续 would leave
+			// the process frozen forever.
+			continue
+		}
+		s, err := sysx.Suspend(pid)
+		if err != nil {
+			r.logLine(j, fmt.Sprintf("[pause] 无法挂起进程 %d: %v", pid, err))
+			continue
+		}
+		r.attachSuspend(j, pid, s)
+	}
 	r.emitState()
 }
 
-// Resume continues a paused queue.
+// Resume thaws every frozen process and lets the queue hand out work again.
 func (r *Runner) Resume() {
 	r.mu.Lock()
 	r.paused = false
 	r.cond.Broadcast()
 	r.mu.Unlock()
+	r.thawAll()
 	r.emitState()
 }
 
 // TogglePause flips the pause state and reports the new value.
 func (r *Runner) TogglePause() bool {
-	r.mu.Lock()
-	r.paused = !r.paused
-	if !r.paused {
-		r.cond.Broadcast()
+	if r.Stats().Paused {
+		r.Resume()
+		return false
 	}
-	v := r.paused
-	r.mu.Unlock()
-	r.emitState()
-	return v
+	r.Pause()
+	return true
 }
 
-// CancelAll running jobs and re-queue the pending ones as cancelled.
+// runningJobs returns the jobs whose ffmpeg process is currently up.
+//
+// The list is copied under the runner mutex and then walked job by job under each
+// job's own lock, so no lock is ever held across an OS call and the two mutexes
+// are never nested.
+func (r *Runner) runningJobs() []*Job {
+	r.mu.Lock()
+	refs := append([]*Job(nil), r.jobs...)
+	r.mu.Unlock()
+
+	var out []*Job
+	for _, j := range refs {
+		j.lock()
+		pid := j.pid
+		j.unlock()
+		if pid > 0 {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// attachSuspend records the handle that will thaw the frozen process again, and
+// marks the job so the UI can say 「已暂停」.
+//
+// It takes the job rather than a pid to look up. Windows recycles pids, so a
+// finished ffmpeg's number can already belong to the next queue item's ffmpeg by
+// the time we get here -- searching by pid would then mark the wrong row frozen
+// and 继续 would thaw a process nobody had suspended.
+//
+// The OS call that froze the process deliberately happened before this: holding the
+// job lock across OpenProcess would serialise every other writer on that job --
+// including the progress reader -- behind a syscall.
+func (r *Runner) attachSuspend(j *Job, pid int, s *sysx.SuspendedProcess) {
+	j.lock()
+	if j.pid != pid {
+		// The process we froze has already been replaced -- ffmpeg exited between
+		// the syscall and here, and a retry or the next queue item has taken over
+		// this job. Attaching the handle now would freeze the badge onto work that
+		// is not running, and 继续 would thaw a process nobody suspended.
+		//
+		// Thaw it rather than just dropping the handle: it is a real frozen
+		// process, and nothing else here is going to wake it.
+		j.unlock()
+		_ = s.Resume()
+		return
+	}
+	j.suspend = s
+	j.Frozen = true
+	j.unlock()
+	r.emitJob(j)
+}
+
+// thawJob resumes one frozen job and clears its flag. It reports whether the job
+// had been frozen in the first place.
+func (r *Runner) thawJob(j *Job) bool {
+	j.lock()
+	s := j.suspend
+	if s == nil {
+		j.unlock()
+		return false
+	}
+	j.suspend = nil
+	j.Frozen = false
+	j.unlock()
+
+	// Thaw first, then clear the flag -- a failure leaves the process frozen, and
+	// the flag is what lets the UI say so instead of showing a stalled bar as if
+	// the job were still running.
+	if err := s.Resume(); err != nil {
+		r.markFrozen(j)
+		r.logLine(j, "[pause] 恢复进程失败: "+err.Error())
+		return true
+	}
+	r.emitJob(j)
+	return true
+}
+
+// markFrozen re-flags a job whose process could not be thawed, so the UI stops
+// claiming it is running.
+func (r *Runner) markFrozen(j *Job) {
+	j.lock()
+	j.Frozen = true
+	j.Message = "已暂停（恢复失败）"
+	j.unlock()
+	r.emitJob(j)
+}
+
+// thawAll resumes every frozen job and reports how many were thawing.
+func (r *Runner) thawAll() int {
+	n := 0
+	for _, j := range r.runningJobs() {
+		if r.thawJob(j) {
+			n++
+		}
+	}
+	return n
+}
+
+// killSuspended terminates every frozen process and drops its handle.
+//
+// A suspended ffmpeg has no runnable thread, so it will never notice the queue was
+// cancelled or the app was closing: it would sit there holding the output file and
+// burning a core indefinitely. Every path that stops work goes through here.
+func (r *Runner) killSuspended() int {
+	n := 0
+	for _, j := range r.runningJobs() {
+		j.lock()
+		s := j.suspend
+		j.suspend = nil
+		j.Frozen = false
+		j.unlock()
+		if s != nil {
+			s.Kill()
+			n++
+		}
+	}
+	return n
+}
+
+// logLine appends a runner-level note to one job. Used for the failure paths of the
+// freeze/thaw primitives, which would otherwise only reach the console.
+func (r *Runner) logLine(job *Job, line string) {
+	limit := 0
+	if prov := r.Providers(); prov != nil {
+		if s := prov.Settings(); s.KeepLogLines > 0 {
+			limit = s.KeepLogLines
+		}
+	}
+	job.lock()
+	job.appendLogLocked(line, limit)
+	job.unlock()
+	r.emitJob(job)
+	r.emitLog(job, []string{line})
+}
+
+// emitLog pushes log lines for a job to the frontend.
+func (r *Runner) emitLog(job *Job, lines []string) {
+	r.mu.Lock()
+	emit := r.emit
+	r.mu.Unlock()
+	if emit != nil {
+		emit(EventJobLog, LogBatch{JobID: job.ID, Lines: lines})
+	}
+}
+
+// CancelAll cancels running jobs and marks the pending ones as cancelled. It also
+// disarms the queue, so files added afterwards wait for 开始 instead of quietly
+// starting themselves.
 func (r *Runner) CancelAll() {
 	r.mu.Lock()
-	r.paused = true
+	r.armed = false
+	r.paused = false
 	for _, j := range r.jobs {
 		if j.cancel != nil {
 			j.cancel()
@@ -644,6 +864,9 @@ func (r *Runner) CancelAll() {
 	// above, but a waiting job has no cancel func yet, so the throttle is the only
 	// way out of that wait.
 	r.slots.stop()
+	// 停止 has to kill the frozen ones explicitly, for the same reason Shutdown
+	// does: a cancelled context does not wake a suspended process.
+	r.killSuspended()
 	r.emitState()
 }
 
@@ -655,7 +878,7 @@ func (r *Runner) Stats() Stats {
 }
 
 func (r *Runner) statsLocked() Stats {
-	s := Stats{Total: len(r.jobs), Paused: r.paused, Workers: r.workers}
+	s := Stats{Total: len(r.jobs), Paused: r.paused, Started: r.armed, Workers: r.workers}
 	done := 0
 	for _, j := range r.jobs {
 		switch j.Status {
@@ -731,7 +954,7 @@ func (r *Runner) take() *Job {
 		if r.stopping {
 			return nil
 		}
-		if !r.paused {
+		if r.armed && !r.paused {
 			for _, j := range r.jobs {
 				if j.Status == StatusPending {
 					j.lock()
@@ -882,14 +1105,11 @@ func (r *Runner) runJob(job *Job) {
 	r.emitJob(job)
 
 	// --- 2. filter rules ---
-	// The queue-level override wins over whatever the template resolved to; it is the
-	// user's "for this batch only" rule. Read once per job so a change mid-run does
-	// not make two files in the same batch obey different rules.
+	// Filtering is entirely the template's business (or the global template's, for
+	// a template that follows it). There is deliberately no queue-level override:
+	// "this batch, these files only" looked like a queue decision but ended up as a
+	// second, hidden copy of the same panel that silently outranked the template.
 	filter := eff.Filter
-	if qf := r.queueFilterSpec(); qf != nil {
-		cp := *qf
-		filter = &cp
-	}
 	if filter == nil {
 		filter = &store.FilterSpec{}
 	}
@@ -946,26 +1166,17 @@ func (r *Runner) runJob(job *Job) {
 
 	// --- 3. resolve output ---
 	out, err := ResolveOutput(OutputRequest{
-		Info: info, Tpl: eff, SrcRoot: job.SourceRoot,
+		Info: info, Tpl: eff, SrcRoot: job.SourceRoot, Index: job.Index,
 	})
 	if err != nil {
 		fail("%v", err)
 		return
 	}
-	if eff.OutConflict == store.ConflictSkip {
-		if st, err := os.Stat(out); err == nil && st.Size() > 0 {
-			job.lock()
-			job.Output = out
-			job.OutputName = filepath.Base(out)
-			job.Status = StatusSkipped
-			job.Message = "输出文件已存在，已跳过"
-			job.EndedAt = time.Now()
-			job.ElapsedMS = job.EndedAt.Sub(job.StartedAt).Milliseconds()
-			job.unlock()
-			r.emitJob(job)
-			r.record(job, s, StatusSkipped, "输出文件已存在")
-			return
-		}
+	// 「已处理过的源文件」: the output path is already taken, so this file has been
+	// through this template before. Processing it again would only redo the same
+	// work, so the section decides what happens to the SOURCE instead.
+	if stop := r.handleProcessed(job, s, eff, out); stop {
+		return
 	}
 
 	// --- 4. plan ---
@@ -999,6 +1210,14 @@ func (r *Runner) runJob(job *Job) {
 		r.log(job, s, "[warn] "+w)
 	}
 
+	// From here the output file exists in some form, so the sidecar goes down
+	// before ffmpeg starts. Anything that stops the run before step 6 verifies
+	// the result leaves a marker behind, which is what tells the next run that
+	// the file sitting there is a corpse rather than a result. It is cleared
+	// explicitly on success and deliberately NOT deferred: the failure paths are
+	// the ones that must keep it.
+	markPartial(out)
+
 	// --- 5. run (with retries) ---
 	attempts := perf.RetryCount + 1
 	var runErr error
@@ -1028,6 +1247,7 @@ func (r *Runner) runJob(job *Job) {
 	if runErr != nil {
 		if perf.DeleteOnFail {
 			_ = os.Remove(out)
+			clearPartial(out)
 		}
 		fail("%v", runErr)
 		r.handleProblemFile(job, s, eff, StatusFailed)
@@ -1039,10 +1259,16 @@ func (r *Runner) runJob(job *Job) {
 	if statErr != nil || st.Size() == 0 {
 		if perf.DeleteOnFail {
 			_ = os.Remove(out)
+			clearPartial(out)
 		}
 		fail("ffmpeg 已退出但输出文件缺失或为空")
 		return
 	}
+	// The file is real from here on, so the "an encode was writing this" marker has
+	// done its job. If the app dies in the next few lines the worst case is a
+	// finished file being re-encoded next time, which is recoverable; the opposite
+	// mistake -- clearing too early -- would leave a truncated file looking done.
+	clearPartial(out)
 
 	outCtx, outCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	outInfo, outErr := media.ProbeFile(outCtx, bins.FFprobe, out)
@@ -1090,10 +1316,107 @@ func (r *Runner) finishCanceled(job *Job, s store.Settings, deleteOnFail bool) {
 	job.unlock()
 	if deleteOnFail && out != "" {
 		_ = os.Remove(out)
+		clearPartial(out)
 	}
 	r.log(job, s, "[cancel] 任务已取消")
 	r.emitJob(job)
 	r.record(job, s, StatusCanceled, "用户取消")
+}
+
+// handleProcessed applies the 「已处理过的源文件」policy. It runs when the output
+// path is already taken: that only happens when this same template produced a
+// result for this source file before, so the source has been through the queue
+// once already and processing it again would just redo the same work.
+//
+// The policy therefore acts on the SOURCE file, not on the output: 留在原处 is the
+// plain "leave it alone" case, and 移动 / 复制 put the source somewhere else so the
+// source tree stops feeding the same file back in. Either way this job is done --
+// the point is to not run ffmpeg again, so unlike the old rename/overwrite rules
+// there is no path here that continues to encoding.
+//
+// It reports whether the job is finished (skipped or failed), in which case the
+// caller must return without running ffmpeg.
+func (r *Runner) handleProcessed(job *Job, s store.Settings, tpl store.Template, out string) bool {
+	ex := tpl.Existing
+	if ex == nil {
+		return false
+	}
+	// "The file is there" means a real previous result. Two things are not:
+	// a zero-byte leftover (an interrupted run that never wrote anything) and a
+	// file an interrupted run was still writing (large, but truncated). The second
+	// is exactly what pausing makes easy to produce -- freeze a long encode, quit
+	// the app, and the next run would otherwise skip the file as already done.
+	if !existsNonEmpty(out) {
+		return false
+	}
+	if isPartial(out) {
+		clearPartial(out)
+		return false
+	}
+
+	src := job.Input
+	if action := ex.Action; action == store.ActionMove || action == store.ActionCopy {
+		if !ex.Dest.Usable() {
+			return r.stopJob(job, s, StatusFailed, "「已处理过的源文件」选择了移动或复制，但目标目录不可用")
+		}
+		dest, err := Relocate(MoveRequest{
+			Src:      src,
+			SrcRoot:  job.SourceRoot,
+			Dest:     ex.Dest,
+			Fallback: store.DestRule{Mode: store.OutputSibling, Suffix: store.DefaultOutputSuffix},
+			// The source file was never re-encoded on this pass, so {ext} is its
+			// own extension -- the same rule the problem-file policies use.
+			Pattern:   ex.Pattern,
+			Overwrite: ex.Overwrite,
+			Copy:      action == store.ActionCopy,
+			Template:  tpl.Name,
+		})
+		if err != nil {
+			return r.stopJob(job, s, StatusFailed, "按「已处理过的源文件」处理失败: "+err.Error())
+		}
+		verb := "移动"
+		if action == store.ActionCopy {
+			verb = "复制"
+		}
+		r.log(job, s, "[processed] 源文件已"+verb+"到 "+dest)
+		src = dest
+	}
+
+	// 「留在原处」and the two relocations all end the same way: this file has
+	// already been through the template, so it is not processed a second time.
+	reason := "该文件此前已用此模板处理过，已跳过"
+	if src != job.Input {
+		reason = "该文件此前已用此模板处理过，源文件已移走，本次跳过"
+	}
+	job.lock()
+	job.Output = out
+	job.OutputName = filepath.Base(out)
+	job.Status = StatusSkipped
+	job.Message = reason
+	job.EndedAt = time.Now()
+	job.ElapsedMS = job.EndedAt.Sub(job.StartedAt).Milliseconds()
+	job.unlock()
+	r.log(job, s, "[processed] "+reason)
+	r.emitJob(job)
+	r.record(job, s, StatusSkipped, reason)
+	return true
+}
+
+// stopJob ends a job that cannot run, with the same bookkeeping everywhere: one
+// locked state write, one log line, one broadcast, one history row. Rolling that
+// out by hand four times per policy is how the fields start drifting apart.
+func (r *Runner) stopJob(job *Job, s store.Settings, status Status, reason string) bool {
+	job.lock()
+	job.Status = status
+	job.Error = reason
+	job.Message = reason
+	job.EndedAt = time.Now()
+	job.ElapsedMS = job.EndedAt.Sub(job.StartedAt).Milliseconds()
+	job.unlock()
+	r.log(job, s, "[processed] "+reason)
+	r.emitJob(job)
+	r.record(job, s, status, reason)
+	return true
 }
 
 // handleProblemFile applies the error / warning policies to the source file.
@@ -1129,11 +1452,13 @@ func (r *Runner) handleProblemFile(job *Job, s store.Settings, tpl store.Templat
 	}
 
 	dest, err := Relocate(MoveRequest{
-		Src:       src,
-		SrcRoot:   job.SourceRoot,
-		Dest:      rule,
-		Fallback:  store.DestRule{Mode: store.OutputMirror, Suffix: store.DefaultOutputSuffix},
-		Pattern:   "{name}.{ext}",
+		Src:      src,
+		SrcRoot:  job.SourceRoot,
+		Dest:     rule,
+		Fallback: store.DestRule{Mode: store.OutputMirror, Suffix: store.DefaultOutputSuffix},
+		// Relocate falls back to "{name}.{ext}" for an empty pattern, which is
+		// exactly the old behaviour: keep the file's own name.
+		Pattern:   spec.Pattern(statusKey),
 		Overwrite: false,
 		Copy:      action == store.ActionCopy,
 		Template:  tpl.Name,
@@ -1176,6 +1501,22 @@ func (r *Runner) execFFmpeg(ctx context.Context, job *Job, plan *Plan, bins medi
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("无法启动 ffmpeg: %w", err)
 	}
+	// Publish the pid so 暂停 can freeze the process.
+	job.lock()
+	job.pid = cmd.Process.Pid
+	job.unlock()
+	defer func() {
+		job.lock()
+		job.pid = 0
+		job.Frozen = false
+		// A handle that survived here means the process finished while frozen --
+		// impossible in practice, but leaking one would pin the process object for
+		// the rest of the session, so it is closed rather than assumed away.
+		orphan := job.suspend
+		job.suspend = nil
+		job.unlock()
+		orphan.Close()
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1334,12 +1675,7 @@ func (r *Runner) log(job *Job, s store.Settings, line string) {
 	job.lock()
 	job.appendLogLocked(line, s.KeepLogLines)
 	job.unlock()
-	r.mu.Lock()
-	emit := r.emit
-	r.mu.Unlock()
-	if emit != nil {
-		emit(EventJobLog, LogBatch{JobID: job.ID, Lines: []string{line}})
-	}
+	r.emitLog(job, []string{line})
 }
 
 // ---------------------------------------------------------------------------

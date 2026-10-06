@@ -165,6 +165,62 @@ inline-flex 的 `.check` 的baseline。在表头里它表现为**点「全选」
 让表头行高与勾选状态无关。**这类"某个状态改变 baseline"的 bug 靠肉眼很难定位，
 要量**：`getBoundingClientRect().height` 逐步对比 before/after 即可。
 
+### 底部面板的标签栏：等高、铺满、居中
+
+`.panel__head` 用 `align-items: stretch` + 固定 `height: 34px`，`.tab` 自身
+`padding: 0 12px` + `margin-bottom: -1px`（下划线压在 head 的 1px 边框上，而不是
+浮在它上面 1px）。**不是 tab 的子元素必须 `align-self: center`**，否则 28px 的按钮
+会被拉成 34px、hint 会变成整条高的块。以前是 `align-items:center` + 上下不对称的
+`7px/9px` 内边距，三个标签各自为政地浮在一条更高的横条里。
+
+面板高度 = 正文高度 + `PANEL_CHROME`（面板顶边 1px + 抓手 6px + 标签栏 34px = 41）。
+改任一项都要同步这个常量，否则正文会比设置值少/多几像素。
+
+正文高默认 **页面高度的一半**（`panelAuto()`，再减去 `PANEL_CHROME`，所以"一半"
+指的是整个面板而不是正文），上限 3/4（`panelCap()`）。
+
+像素值 `LogPanelHeight` **只在 `LogPanelSized` 为真时才生效** —— 也就是用户拖过
+抓手之后。否则换一台机器、换个窗口尺寸打开，一个"在别处很合适"的数字会钉死这里的
+布局。像素默认值不能是"一半"，因为它没见过那个窗口。
+
+`mount()` 里要再调一次 `applyPanel()`：构造时 `el` 还没进文档、`getBoundingClientRect()`
+是 0，`pageHeight()` 会退回 `window.innerHeight`，比真实页面高一个标题栏。
+
+### 入队：点名文件和扫目录同一道闸
+
+`AddInputs` 里**直接点名的文件以前不过 `isMediaFile()`**，只有扫目录才过 —— 于是
+把一个 .zip 拖进窗口会真的建出一个 ffmpeg 永远打不开的任务：计数涨了、列表却没行
+（它只广播 stats，不广播 job:update）。按用户的要求是不支持的文件根本不进队列，
+并给出「xxx.zip: 不是媒体文件，已跳过」。
+
+**添加文件后前端必须自己 `api.jobs()` 重拉**（`reportAdd` 与 app.js 的拖放回调都要），
+否则那次新增只有计数变化、表格要等到别的事件顺带重绘才出现。
+回归：`TestAddInputsRejectsFilesFFmpegCannotOpen`。
+
+### 原生控件要跟着主题走
+
+`html` 上必须写 `color-scheme: dark`。`.select` 的框是我们自己画的，但**弹出来的
+列表、它的滚动条、焦点环是 WebView2 画的**，没有这一句它们按浅色渲染 —— 深色应用
+里长出一个白下拉框。
+
+`.input:focus, .select:focus` 里用的是 `background-color` 而不是 `background`：
+简写会把 `.select` 的 `background-image`（下拉箭头）重置掉，聚焦时箭头就没了。
+
+### 确认弹窗用 `.modal--dialog`，不要用通用 modal 的 chrome
+
+通用 modal 的头 63px、脚 59px（头里那个 34px 的图标按钮撑的），正文只有 43px，
+上下两条占了 73% 的高度；正文又是 `18px 上 / 6px 下` 的内边距 —— 合起来让那句话
+比弹窗中心低了 8.6px，看着就是"不居中、偏下"。
+
+`confirmDialog` 因此走自己的尺寸类 **`.modal--dialog`**：上面一行标题（无下边框，
+关闭按钮 `position:absolute` 移出流以便标题居中 —— 注意 `spacer` 要 `display:none`，
+否则它会把标题往左挤 14px）；**下面正文与按钮栏共用 `surface-2`、中间没有分隔线**，
+读起来是一整块；两个按钮都是 82px 起的实心/tonal 药丸，右对齐，删除按钮用填充的
+error 色突出。宽度 440px。
+
+改任何一条都会把版面推回原样 —— 靠量（`getBoundingClientRect`），别靠眼睛：
+现在的数字是「文字中心与弹窗中心差 0.2px」「标题盒中心与弹窗中心重合」。
+
 ### 前后对比单元格（`.cmp`）
 
 分辨率 / 时长 / 大小三列在任务完成后显示"处理前 → 处理后"。做法是**两个格子叠在
@@ -177,25 +233,18 @@ inline-flex 的 `.check` 的baseline。在表头里它表现为**点「全选」
 `createElement('tbody')` 再读 `children[i]`"这种写法**静默拿到 undefined**，
 `patchJob` 会持续抛 `Cannot read properties of undefined`。返回字符串最省事也最稳。
 
-### 队列级筛选覆盖（`queueFilter`）
+### 筛选只在模板上（已删掉的队列级覆盖）
 
-模板的筛选规则是"这类文件怎么处理"，而"这一批只要这些文件"是**队列的决定**，
-改模板会连带影响所有用它的队列。所以在 `Runner` 上加了一个运行时覆盖：
-
-- `Runner.SetQueueFilter(*store.FilterSpec)`，nil = 不覆盖
-- 覆盖**整段替换**模板规则，不做合并 —— 面板上只有一组数字，半合并的规则集
-  描述不了实际会发生什么
-- 每个 job 在阶段 2 读一次（`queueFilterSpec()`），批次中途改设置不会让同一批里
-  两个文件遵守不同规则
-- 持久化在 `Settings.QueueFilter` + `QueueFilterSet`。**两者都要**：
-  `QueueFilter == nil` 表示"交回模板"，而 `QueueFilterSet` 记录面板是否被显式打开，
-  否则关掉面板和"清空条件"混为一谈
+曾经在 `Runner` 上挂过一个"本批次筛选"覆盖（`SetQueueFilter` + `Settings.QueueFilter`
+/ `QueueFilterSet`），理由是"这一批只要这些文件"看起来是队列的决定。**实际用起来是
+第二份筛选面板**：它整段压过模板，而界面上只有一个 chip 提示，用户很难意识到自己
+填的模板规则没生效。已整体删除——筛选规则只有一处，就是模板（跟随的模板则用全局的）。
 
 ### 批量移除
 
 `Runner.RemoveJobs(ids)` **一把锁删完**，而不是循环调 `RemoveJob`：后者每次都
 `emitState()`，勾 50 行就会重绘 50 次，中间还会闪出半空的列表。未知 id 直接跳过
-而不是报错——队列在跑的时候行可能自己就没了。回归测试见 `queuefilter_test.go`。
+而不是报错——队列在跑的时候行可能自己就没了。回归测试见 `jobs_test.go`。
 
 **但后端只广播 stats（`queue:state`），不广播"行没了"**。前端 `on(EVENTS.queue)`
 只刷新工具栏——所以删除曾经"成功了但界面不动"。修复在发起方：
@@ -222,7 +271,7 @@ Shift 勾 C"会从过期的锚点起算。焦点行样式是**描边**（`is-sel
 
 ### 模板继承：全局默认值
 
-→「输出与命名 / 处理性能 / 筛选条件 / 错误与警告」曾经是全局设置，现在全部
+→「输出与命名 / 处理性能 / 匹配条件 / 错误与警告」曾经是全局设置，现在全部
 挂在模板上。`store.GlobalTemplateID`（`t-global`）那个模板只提供默认值，
 **它就是列表的第一项**（`.tpl-row--global`），和其余模板共用一个滚动区与
 一套行样式 —— 曾经给它单独做了一张虚线卡片（`.tpl-global`），那是"面板叠面板"，
@@ -233,13 +282,19 @@ Shift 勾 C"会从过期的锚点起算。焦点行样式是**描边**（`is-sel
 「新建模板」；第二行是搜索框。曾经有个"模板"标题，加下面一行分隔线里还有
 一个"模板"，加上页面标题 —— 同一个词在屏幕上出现三次。
 
-四段都有「与全局不同」开关，继承有两套机制，因为字段语义不同：
+五段都有「与全局不同」开关，继承有两套机制，因为字段语义不同：
 
-- **处理性能 / 筛选条件 / 错误与警告** 整段回落（`*Spec` 指针，nil = 跟随）。
-  因为 `0` 在这些字段里本身有意义 ——「不限制体积」和「跟随全局」必须能区分开。
+- **处理性能 / 已处理过的源文件 / 匹配条件 / 错误与警告** 整段回落（`*Spec` 指针，
+  nil = 跟随）。因为 `0` 在这些字段里本身有意义 ——「不限制体积」和「跟随全局」
+  必须能区分开。
 - **输出与命名** 由 `Template.OutputOverride` 决定：开关关着就**整段丢弃**模板
   自己写的值，开着才逐字段留空回落（`Template.Effective`）。段内没有「0 有意义」
   的字段，所以不需要指针。
+
+**「与全局不同」是唯一的跟随开关**，下拉框里不再有「跟随全局设置」那一项。一个状态
+给两个控件，界面就会出现「看着在跟随、命令里却是别的值」。因此段内字段在渲染时要用
+`orGlobal(value, globalValue)` 兜底：Go 侧把空值当回落处理，前端就得显示回落后
+那个真实值，否则 `<select>` 会停在第一个选项上，和命令对不上。
 
 `OutputOverride` 一定要在 `Effective` 里**先清空再回落**。只做逐字段回落的话，
 一个关着开关却残留旧值的模板，界面写着「跟随全局」而命令用的是旧值 ——
@@ -247,16 +302,41 @@ Shift 勾 C"会从过期的锚点起算。焦点行样式是**描边**（`is-sel
 自动当作「开关已开」，否则升级会把它们的输出规则悄悄退回全局。
 
 `Effective` 返回的模板**共享全局模板的段指针**，只读。不要对它调 `Normalize`，
-那会写穿到全局模板上。要改就 `ClonePerf` / `CloneFilter` / `CloneProblems`。
+那会写穿到全局模板上。要改就 `ClonePerf` / `CloneExisting` / `CloneFilter` /
+`CloneProblems`。
 
 前端镜像：`views/sections.js` 的 `effective(t, g)`，与 Go 侧必须同步
 （任务页的筛选 chip 要在本地描述"这条任务实际会怎样"）。段的显示顺序也只在
 `sections.js` 的 `SECTIONS` 里定义一次。
 
-### DestRule：四段输出共用一套规则
+### 已处理过的源文件（`ExistingSpec`）
 
-主输出、筛选排除的文件、问题文件都用 `store.DestRule{Mode,Dir,Suffix}`，
-由 `store.ResolveDestDir` 统一解析成目录。四种模式：
+输出位置已经有文件 = 这个源文件之前被同一个模板处理过。`Action` 只有三种：
+`""`（不处理，留在原处）/ `ActionMove` / `ActionCopy`，与「匹配条件」的被排除文件、
+「错误与警告」的错误 / 警告文件**完全一致** —— 三段作用的对象不同（已处理的源文件 /
+被筛掉的源文件 / 出问题的源文件），但规则读起来一样，不需要各记一套。
+
+作用对象是**源文件**，不是那份旧输出。这一段存在的理由是「同一批文件只处理一次」，
+所以三种方式下本次都不会再跑 ffmpeg：`handleProcessed` 一律返回 true（结束任务），
+差别只在源文件安置到哪里。这也是为什么 `ResolveOutput` **不再**用 `EnsureUnique`
+给占用路径换名 —— 悄悄换个名字等于把同一份文件编码两遍，而界面上看不出。
+
+三处容易写错的地方：
+
+- **搬的是源文件，所以锚点是源目录树**，`Relocate` 的 `SrcRoot` 传
+  `job.SourceRoot`（用户添加的那个目录）。第 24 批曾经按「输出树的根」锚，还为此
+  加了 `OutputTreeRoot`；语义改成源文件后那个函数就多余了，已删。
+- **零字节残留不算「已处理过」**。`st.Size() == 0` 是上次中断留下的半成品，
+  当成完成的文件会让用户正想要的那次重跑被跳过。
+- **这一段在全局模板里默认是 nil（不启用）**。非 nil 就一定会跳过已处理的文件，
+  而「同一批只处理一次」是少数人要的默认行为 —— 内置一个非 nil 的段等于给所有人
+  悄悄改了默认。段开关打开时前端从 `seedSection` 拿到 `keep` 作为起点。
+
+
+### DestRule：五段输出共用一套规则
+
+主输出、筛选排除的文件、已处理过的旧输出、问题文件都用
+`store.DestRule{Mode,Dir,Suffix}`，由 `store.ResolveDestDir` 统一解析成目录。四种模式：
 
 ```
 same    与源文件同目录
@@ -276,9 +356,36 @@ D:\video\mmd\a.mp4        ->  D:\video\mmd_out\a.mp4
 D:\video\mmd\sub\b.mp4    ->  D:\video\mmd_out\sub\b.mp4
 ```
 
-所以默认命名模板是 `{name}.{ext}` 而不是 `{name}_out` —— 目录已经带了标记，
-文件名再加一遍纯属噪音。`{ext}` 取的是**输出**扩展名（`ResolveOutput` 里传
-`outExt`），否则选了别的容器会得到一个 MP4 内容却叫 `.mkv` 的文件。
+所以默认命名模板是 `{name}` 而不是 `{name}_out` —— 目录已经带了标记，
+文件名再加一遍纯属噪音。命名模板只表达**文件名**：扩展名由「输出格式」（容器）
+决定，`ResolveOutput` 发现展开结果没有扩展名时会自动补上 `outExt`。
+
+**两套变量，别合并成一个**（第 26 批）：`ExpandOutputPattern` 给「输出与命名」，**没有**
+`{ext}` —— 扩展名由容器决定，多一个 `{ext}` 就等于让文件名同时依赖两个设置，而症状
+只会在换容器之后才显形。`ExpandPattern` 给被搬走的文件（匹配条件排除的、已处理过的
+源文件、错误 / 警告），它们不重新编码、保留自己的扩展名，那里 `{ext}` 仍然有意义。
+输出侧的 `expand` 会把残留的 `{ext}` 删掉（老模板写着 `{name}.{ext}`），
+因此还要处理 `clip.` 这种只剩一个点的名字，否则补后缀时得到 `clip..mp4`。
+
+命令预览（`app.go` 的 `buildPreview`）在读不到源文件时会用示例媒体，**这条路也必须走
+`ResolveOutput`**。早先它直接输出 `{输出}` 占位，于是命名模板和输出容器在预览里完全
+看不见，`{name}` 显示成没有扩展名的样子 —— 逼着用户把 `{ext}` 写进模板才能看到结果。
+
+「输出格式」（`Container`）放在「输出与命名」段里、与命名模板同一行，但它**不是**
+可继承字段——每个模板自己选容器。所以段处于跟随状态时它单独留在原位（
+`inheritableSection` 里 `!active` 才渲染独立行；展开时由 `outputBody` 渲染，
+两处只会出现一处，否则同名控件渲染两份会各改各的）。
+
+### 分辨率：只写钉死的那一边
+
+`computeScale` 在长边 / 短边（以及只填了宽或高的 exact）模式下，把用户钉死的那
+一边写进 `scale=`，另一边交给 ffmpeg：`-1` 保持比例，`-n`（对齐倍数 N）保持比例
+并取整到 N 的倍数，默认对齐 2 即 `-2`。程序不再自己算另一边 —— 算出来的两个数
+交给 ffmpeg 与只交一个数相比，只是把猜测从 ffmpeg 挪进了程序。返回的
+`TargetW/TargetH` 仍是同一公式算出的估算值，供预览与记录展示。
+
+缩放算法为空 = 不写 `:flags=`（ffmpeg 默认 bicubic）。`Normalize` 因此**不能**
+把空算法补成 lanczos，那等于替用户做了一次没被要求的选择。
 
 `custom` / `mirror` 的 `Dir` 为空是配置错误，`Validate` 会明确报错，
 而不是静默退回"写在源旁边"。
@@ -295,6 +402,53 @@ NVENC / QSV / AMF 读 `-cq`），**宁缺勿猜**。只在真的丢弃了用户�
 
 `Template.Normalize` 因此**不能**把 `CRF` 默认成 23 —— 那会给每个从没要求过
 CRF 的模板都塞一个 `-crf`，而且对非 lib\* 编码器来说还会标错质量。
+
+「未设置」在界面上只有**一种说法**（`app.go` 的 `DefaultOptionLabel`）：
+下拉框 =「默认（由 ffmpeg 决定）」，占位文字 =「留空 = 默认」，数值 0 =
+「保持原样」或「不限」。同一个意思写四种词，用户会读成四种行为。
+`Normalize` 同理不能把空的 `Resize.Algorithm` / `Preset` 补成具体值。
+
+### 全局模板永远不能绑定任务
+
+`a.templates` 里 **全局模板是排在第一位的**（`ReorderTemplates` 强制置顶），
+所以任何「取第一个模板兜底」的写法都会把任务绑到 `t-global` 上 —— 它只有默认值，
+处理不了文件，而且界面上会出现「工具栏是 A、任务是 全局模板」的错位。
+`App.enqueue` 的兜底必须 `!t.Global` 过滤；前端 `syncTemplateOptions` 在回落时
+要把选中的 id 写回 `settings.lastTemplateId`，别让后端自己去猜。
+
+### 输入框随选项联动（前端）
+
+`templates.js` 的 `ENABLED_BY` 声明「哪个下拉的哪个值点亮哪些输入框」；
+`refreshEnabled()` 在渲染后和每次变更后把无关的框置灰（`disabled` +
+`.is-disabled`），**不整表重渲染** —— 重渲染会抢走焦点、打断正在输入的内容。
+一个字段被多条规则提及时，必须每条都允许才算可用。
+
+### 两处命令必须同源
+
+| 入口 | 模板来源 | 媒体信息来源 |
+|---|---|---|
+| runner（真实执行） | job.TemplateID | 运行时探测 |
+| 任务面板「命令预览」`PreviewCommand` | job.TemplateID | 实时探测 |
+
+工具栏那个"给整批任务生成命令"的 `PreviewQueue` 已经删掉了：它按工具栏模板另
+算一份，与任务面板天然可能不同，而用户只读得出"两份命令打架"。现在切换模板
+直接改 `job.TemplateID`（见下），两处也就没有第二份可算了。
+
+这两处一旦各算各的，用户就会看到"两份都说得通的命令互相矛盾"。已定的规矩：
+
+- **工具栏切换模板立刻改 `job.TemplateID`**（`SetAllTemplates` →
+  `Runner.UpdateAllTemplates`），不是"只影响之后添加的文件"。除了**正在运行/
+  准备中**的那条（中途换参数只会产出半旧半新的文件），其余全部跟着走，
+  已完成的回到 `pending` —— 否则留下一份结果，却没有任何地方写着它是按什么
+  参数做出来的。返回 `ApplyResult{Applied, Requeued}` 供前端如实提示
+- **`emitState()` 只广播 stats**，不广播任务列表。结构变更（改模板、删除）
+  之后前端必须自己 `refreshJobs()`，否则行里会一直显示旧的模板名
+- **`{index}` 用 `job.Index`**（入队顺序，1 起，删除不重排）。预览以前用切片
+  下标、runner 根本不传 —— 同一个变量两处展开出不同文件名
+- **探测失败回退到 `sampleInfo()` 必须写进 Warnings/Notes**，"按 3840×2160 示例
+  计算"。静默替换就是"两块面板数字对不上且都看不出谁错"的头号来源
+- 模板页的预览走 `PreviewTemplate(draft)`：按 id 查只能拿到**已保存**的模板，
+  那条"未保存的修改也会体现在这里"的说明原本是假的
 
 ### ffmpeg 参数顺序
 
@@ -319,6 +473,64 @@ CRF 的模板都塞一个 `-crf`，而且对非 lib\* 编码器来说还会标�
   `sysx.NoWindow()`。
 - **`PrintWindow` 抓不到 WebView2 窗口**（DirectComposition 表面），只能桌面
   BitBlt，且被抓窗口被遮挡时会抓到遮挡物。
+
+### 队列的启动与暂停（`armed` / `paused`）
+
+**两个状态，不是一个。** `paused` 是"跑起来了、按住不放"；`armed` 是"用户点过开始"。
+worker 池在加载模板时就建好（`EnsureWorkers`），所以只有让 `take()` 额外看
+`r.armed && !r.paused`，才能做到"拖入文件只排队、不开跑"。
+
+- `Start()`：`armed=true` + `paused=false`，这是**唯一**能让任务跑起来的入口
+- `CancelAll()`（停止）：`armed=false` + `paused=false`。之后加进来的文件重新排队等开始，
+  而不是接着上一次的进度继续
+- `Stats.Started` 给前端区分「未开始」和「已暂停」—— 没启动过的队列按暂停处理时，
+  「暂停」按钮是个点了看不出区别的死按钮（这正是第 25 批前它"无效"的原因）
+
+`Stats` 的 `Started` 与 `paused` 必须一起看：只报 `paused` 的话，界面无法区分
+「还没开始」和「按住了」。
+
+### 暂停 = 真的挂起 ffmpeg 进程
+
+「暂停」不只是按住队列——**正在转码的那个 ffmpeg 进程也会被冻住**
+（`internal/sysx/suspend_windows.go`，`NtSuspendProcess`）。ffmpeg 没有暂停动词，
+杀掉会丢掉已转的帧，"从上次进度重跑"需要再编码一遍并在容器层拼接，产出的文件
+不是原来那个。只有冻进程才是真暂停。
+
+- **句柄必须带三个权限**：`PROCESS_SUSPEND_RESUME`（挂起）、`PROCESS_TERMINATE`
+  （退出时杀）、`PROCESS_QUERY_LIMITED_INFORMATION`（`GetExitCodeProcess`，
+  `Alive()` 靠它）。**少第三个 `Alive()` 会把每个冻住的进程都报成已死** ——
+  唯独这个函数的职责就是分清这两者，方向反了最糟。
+- **内核挂起计数**：按两次「暂停」需要两次「继续」。`Pause()` 因此跳过已持有
+  句柄的任务（`j.suspend != nil`）；不跳的话用户狂点按钮后界面显示「已继续」，
+  进程却永远冻着。
+- **`Pause` 传 job 指针，不传 pid 去查**。Windows 会回收 pid：前一个 ffmpeg 退出、
+  下一个任务的 ffmpeg 拿到同一个号，按 pid 认领就会**冻错行**，「继续」去解冻一个
+  没人挂起的进程，真正的那个还冻着。`attachSuspend` 校验 `j.pid` 没变再认领，
+  变了就 `Resume()` 掉那个散进程。
+- **`killSuspended()` 在 `Shutdown()` 和 `CancelAll()` 里都要调**。取消 context 对
+  冻住的进程无效（没有可运行的线程去观察取消），只关管道的话，用户关掉程序后
+  面对的是一个**孤儿 ffmpeg** 占着 CPU 和输出文件。
+- 进程句柄走 job 锁，但**绝不跨 OS 调用持锁**（`OpenProcess` 期间会挡住进度
+  读取那条 goroutine）。`runningJobs()` 先在 runner 锁下复制列表再逐个加锁，
+  两把锁不嵌套。
+- 恢复失败时 `markFrozen` **保留徽标**并写「已暂停（恢复失败）」：显示成「处理中」
+  配一条再也不动的进度条，用户只会以为界面坏了。
+
+### 半成品标记（`internal/engine/partial.go`）
+
+暂停让「转了一半被中断」变得非常容易发生——而半成品通常是几十 MB，**不是零字节**，
+所以 `handleProcessed` 原来那个 `st.Size()==0` 判断抓不到它，会把截断的文件当成
+「已处理过」跳过，用户点的重跑被无声地吃掉。
+
+- 输出文件旁边放一个 `.ffmpeggui-part` 空标记：ffmpeg 启动前写，**确认产物有效后
+  才删**。失败/取消路径保留它。
+- **绝不能用 `defer` 删**：失败路径也走 defer，那样标记刚写下就被抹掉，正好反了。
+- 标记是**磁盘上**的，不是内存集合：真正要解决的场景是用户暂停后关掉程序、下周
+  再拖同一个文件，那时 runner 的状态早没了，只剩磁盘上那个截断文件。
+- `isPartial` 同时查绝对路径：`ResolveOutput` 的路径由源根拼出来，源根可能是相对
+  路径，拼法不同但指向同一个文件。
+- 不需要清理孤儿标记：所有调用方都先 `existsNonEmpty`，产物没了就直接返回，
+  根本走不到 `isPartial`，残留文件是无害的。
 
 ### 并发
 
@@ -351,15 +563,15 @@ per-template 的并发门在 `internal/engine/throttle.go`，它**故意不用**
 | `history.json` | 处理记录（26 列中文表头 CSV 可导出） |
 | `logs/` | 运行日志，按天龄 + 体积双限制轮转 |
 
-### 旧配置迁移
+### 旧配置迁移（已删除）
 
-迁移到全局模板之前，`settings.json` 里那些字段是扁平的（`concurrency`、
-`outputDirMode`…），`filters` 是个嵌套对象。它们现在保留为
-`Legacy*` 字段，配 `omitempty`，由 `NewGlobalFromLegacy` 读一次后
-`ClearLegacy` 清空。
+曾经为"全局配置还在 `settings.json` 里"的旧版本保留过一条迁移路径：`Legacy*` 字段
+（扁平键 + 嵌套的 `filters` 对象）、`NewGlobalFromLegacy` / `ClearLegacy` /
+`HasLegacy`，启动时读一次建出全局模板再清空。**这套已经整体删掉**——现存的
+`settings.json` 里早就没有那些键了，留着只是让每个读配置的人都要绕一遍。
 
-注意 `filters` 必须是**嵌套结构**：用点号键（`json:"filters.minSizeMB"`）
-`encoding/json` 并不支持，会静默读不到，迁移就成了空操作。
+当时踩过的坑记在这里，因为同样的写法还会再遇到：`encoding/json` **不支持点号键**
+（`json:"filters.minSizeMB"` 会被当字面键名、静默读不到），嵌套结构必须真嵌套。
 
 ## 图标
 
