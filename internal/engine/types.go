@@ -121,6 +121,13 @@ type Job struct {
 	LogTail      []string `json:"logTail"`
 	LogLineCount int      `json:"logLineCount"`
 
+	// OutputDeleted says the output file has been deleted, while the job itself
+	// stays in the queue. The row keeps its place on purpose -- it is still the
+	// record of which source this was and what it cost -- but an 打开输出 button
+	// that opens nothing is worse than no button, so the row has to be able to say
+	// the file is gone.
+	OutputDeleted bool `json:"outputDeleted"`
+
 	RecordID string `json:"recordId"`
 
 	// mu is a pointer so that a snapshot (a plain value copy) never duplicates
@@ -239,6 +246,16 @@ type Stats struct {
 
 // Overall returns how far the queue has progressed (0..1).
 func (s Stats) Overall() float64 { return s.Progress }
+
+// Finished counts the jobs that have stopped, whatever they stopped as.
+//
+// Progress is built from exactly this sum, and the tray tooltip prints it, so it
+// lives here rather than being re-added at each of the two call sites -- a
+// tooltip that says 4/9 while the bar next to it says 5/9 is the kind of
+// disagreement that costs half an hour to chase.
+func (s Stats) Finished() int {
+	return s.Done + s.Warning + s.Failed + s.Canceled + s.Skipped + s.Filtered
+}
 
 // ApplyResult reports what re-pointing jobs at another template changed.
 // Requeued is a subset of Applied: those jobs had already finished and were

@@ -14,6 +14,24 @@ export namespace engine {
 	        this.requeued = source["requeued"];
 	    }
 	}
+	export class DeleteResult {
+	    deleted: number;
+	    skipped: number;
+	    paths: string[];
+	    errors: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deleted = source["deleted"];
+	        this.skipped = source["skipped"];
+	        this.paths = source["paths"];
+	        this.errors = source["errors"];
+	    }
+	}
 	export class Job {
 	    id: string;
 	    input: string;
@@ -53,6 +71,7 @@ export namespace engine {
 	    elapsedMs: number;
 	    logTail: string[];
 	    logLineCount: number;
+	    outputDeleted: boolean;
 	    recordId: string;
 	
 	    static createFrom(source: any = {}) {
@@ -96,6 +115,7 @@ export namespace engine {
 	        this.elapsedMs = source["elapsedMs"];
 	        this.logTail = source["logTail"];
 	        this.logLineCount = source["logLineCount"];
+	        this.outputDeleted = source["outputDeleted"];
 	        this.recordId = source["recordId"];
 	    }
 	

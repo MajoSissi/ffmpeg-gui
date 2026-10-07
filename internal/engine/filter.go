@@ -130,9 +130,11 @@ func Relocate(req MoveRequest) (string, error) {
 		}
 		return r
 	}, newName)
-	if filepath.Ext(newName) == "" && ext != "" {
-		newName += "." + ext
-	}
+	// Same rule as ResolveOutput: the file keeps its own extension, and "does it
+	// already end with .mp4" is the question -- not "does it have a dot in it".
+	// A source named "qqq.123.mp4" renames to "qqq.123" with a {name} pattern,
+	// and testing for any extension left the moved file with none.
+	newName = EnsureExt(newName, ext)
 
 	dest := filepath.Join(dir, newName)
 	if !req.Overwrite {
@@ -287,9 +289,12 @@ func ResolveOutput(req OutputRequest) (string, error) {
 	if strings.TrimSuffix(newName, ".") != newName {
 		newName = strings.TrimSuffix(newName, ".")
 	}
-	if filepath.Ext(newName) == "" && outExt != "" {
-		newName += "." + outExt
-	}
+	// The extension always comes from the container, so it is added unless the
+	// pattern already spells out that exact one. Testing "has any extension"
+	// instead was a bug: a source named "qqq.123.mp4" yields the stem "qqq.123",
+	// whose filepath.Ext is ".123", so the test passed and the output was written
+	// as "qqq.123" -- no extension at all.
+	newName = EnsureExt(newName, outExt)
 	if strings.TrimSpace(newName) == "" {
 		newName = base
 	}
@@ -298,15 +303,15 @@ func ResolveOutput(req OutputRequest) (string, error) {
 
 	// Never silently overwrite the source file itself.
 	if samePath(dest, info.Path) {
-		dest = filepath.Join(dir, ReplaceExt(name, outExt))
+		dest = filepath.Join(dir, EnsureExt(name, outExt))
 		if samePath(dest, info.Path) || outExt == info.Ext {
-			dest = filepath.Join(dir, ReplaceExt(name+"_out", outExt))
+			dest = filepath.Join(dir, EnsureExt(name+"_out", outExt))
 		}
 	}
 
 	// An occupied path is NOT resolved away here. Renaming it would hand ffmpeg a
-	// fresh name and quietly double every batch; the 「已处理过的源文件」 policy wants
-	// to see that the file is there, and deciding what it means is the runner's
-	// job (engine.Runner.handleProcessed).
+	// fresh name and quietly double every batch; deciding what an occupied path
+	// means is the runner's job (engine.Runner.handleProcessed), which is the only
+	// place that can also see the source file and the section's own record.
 	return dest, nil
 }

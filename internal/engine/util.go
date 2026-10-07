@@ -127,7 +127,7 @@ type Naming struct {
 //     is a file name, and the extension belongs to 「输出格式」. Offering it there
 //     made the output depend on two settings at once, and the only symptom was a
 //     preview that looked right until you changed container.
-//   - ExpandPattern is for files being moved aside (被排除 / 已处理过的源文件 /
+//   - ExpandPattern is for files being moved aside (被排除 / 已处理过的文件 /
 //     错误 / 警告). Nothing re-wraps them, so they keep their own extension and
 //     {ext} still means something.
 func ExpandPattern(pattern string, n Naming) string {
@@ -219,12 +219,40 @@ func ContainerExt(container string) string {
 }
 
 // ReplaceExt swaps the extension of name.
+//
+// It is right when the last dot really is an extension. It is wrong when it is
+// not -- "qqq.123" has filepath.Ext ".123", and replacing that yields "qqq.mp4",
+// quietly eating the version number. For an output name whose extension is
+// decided by 「输出格式」, use EnsureExt instead.
 func ReplaceExt(name, ext string) string {
 	if ext == "" {
 		return name
 	}
 	old := filepath.Ext(name)
 	return strings.TrimSuffix(name, old) + "." + ext
+}
+
+// EnsureExt gives name the extension ext unless it already ends with it.
+//
+// The comparison is against the extension we intend to write, never against
+// "does this name have any extension at all". filepath.Ext calls the ".123" in
+// "qqq.123.mp4" an extension, so a source named "qqq.123.mp4" with the default
+// {name} pattern produces the stem "qqq.123" -- and a naive Ext(name) == ""
+// test then declares it complete. The file lands on disk as "qqq.123" with no
+// extension, ffmpeg cannot infer a muxer from it, and the output is unplayable
+// under its own name.
+//
+// The point of the naming pattern is the file NAME; the extension comes from
+// 「输出格式」. So the only question worth asking is whether that extension is
+// already there.
+func EnsureExt(name, ext string) string {
+	if ext == "" {
+		return name
+	}
+	if strings.EqualFold(filepath.Ext(name), "."+ext) {
+		return name
+	}
+	return name + "." + ext
 }
 
 // HumanSize renders a byte count the way a file manager would.

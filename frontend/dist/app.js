@@ -246,9 +246,18 @@ function paintBadges() {
 
 /* ------------------------------------------------------------------ events */
 
+// Update only, never add. The row list is only ever *extended* by pulling it (boot,
+// 添加文件, 拖入), which every structural change already does.
+//
+// This used to push an unknown job, and that is exactly what made a removed row come
+// back: the backend broadcasts only stats for a removal, so the frontend re-pulls --
+// and a `job:update` still in flight for that id then landed on a list that no longer
+// had it and quietly put the row back. 移除 afterwards did nothing, because the
+// backend was no longer holding that job at all.
 on(EVENTS.jobUpdate, (job) => {
   const i = state.jobs.findIndex((j) => j.id === job.id);
-  if (i >= 0) state.jobs[i] = job; else state.jobs.push(job);
+  if (i < 0) return;
+  state.jobs[i] = job;
   views.tasks.onJobUpdate(job);
 });
 
@@ -342,7 +351,13 @@ window.addEventListener('keydown', async (e) => {
   if (mod && e.key.toLowerCase() === 'o') {
     e.preventDefault();
     const r = await api.addFilesDialog(state.recursive);
-    if (r?.added) { views.tasks.mount(); toast(`已添加 ${r.added} 个文件`, 'success'); }
+    if (r?.added) {
+      // Adding only broadcasts the counters, so the rows are pulled here -- the
+      // `job:update` handler above deliberately never invents one.
+      state.jobs = await api.jobs();
+      views.tasks.onJobsChanged();
+      toast(`已添加 ${r.added} 个文件`, 'success');
+    }
   } else if (mod && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     go('tasks');

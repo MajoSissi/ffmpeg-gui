@@ -17,6 +17,11 @@ import (
 type Callbacks struct {
 	OnShow func()
 	OnQuit func()
+	// OnReady fires once the icon and the menu are actually up. Anything that
+	// writes to the icon before that is dropped by the library (it returns
+	// ErrTrayNotReadyYet), so a tooltip describing the current queue has to be
+	// pushed from here rather than from Start.
+	OnReady func()
 }
 
 // Controller owns the tray lifecycle.
@@ -30,6 +35,10 @@ type Controller struct {
 	started bool
 	stopped bool
 	stopCh  chan struct{}
+	// shown is the tooltip currently on the icon. Every queue event tries to
+	// update the hover text, and each update is a synchronous Shell_NotifyIcon
+	// round trip to explorer, so identical text is dropped here instead.
+	shown string
 }
 
 // New builds a controller. icon must be ICO data on Windows.
@@ -39,6 +48,7 @@ func New(cbs Callbacks, icon []byte, title, tooltip string) *Controller {
 		icon:    icon,
 		title:   title,
 		tooltip: tooltip,
+		shown:   tooltip,
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -67,13 +77,26 @@ func (c *Controller) Stop() {
 	c.stopped = true
 	close(c.stopCh)
 	c.mu.Unlock()
+	// Give the tray window back before tearing the tray down: systray builds a
+	// fresh window on the next Run, and 设置 → 托盘 off/on does exactly that.
+	// Leaving the hook state behind made the restart skip the new window, which
+	// is why clicking the icon stopped opening the window after a toggle.
+	c.uninstallLeftClick()
 	systray.Quit()
 }
 
-// SetTooltip updates the hover text (used to show queue progress).
+// SetTooltip updates the hover text (used to show queue progress). An empty
+// string means "nothing to report" and restores the idle title.
 func (c *Controller) SetTooltip(text string) {
 	if text == "" {
 		text = c.tooltip
+	}
+	c.mu.Lock()
+	same := text == c.shown
+	c.shown = text
+	c.mu.Unlock()
+	if same {
+		return
 	}
 	systray.SetTooltip(text)
 }
@@ -93,6 +116,7 @@ func (c *Controller) onReady() {
 
 	mShow := systray.AddMenuItem("显示主界面", "打开 FFmpeg GUI 窗口")
 	mQuit := systray.AddMenuItem("退出", "停止所有任务并退出程序")
+	c.ready()
 
 	go func() {
 		for {
@@ -114,3 +138,11 @@ func (c *Controller) onReady() {
 }
 
 func (c *Controller) onExit() {}
+
+// ready is the tail of onReady: the icon, the hook and the menu are all up, so
+// this is the first moment a tooltip write actually sticks.
+func (c *Controller) ready() {
+	if c.cbs.OnReady != nil {
+		c.cbs.OnReady()
+	}
+}

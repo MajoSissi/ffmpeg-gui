@@ -329,7 +329,7 @@ func TestNormalizeKeepsUnsetScaleAlgorithm(t *testing.T) {
 	}
 }
 
-// The 「已处理过的源文件」 section skips an already-processed file whenever it is
+// The 「已处理过的文件」 section skips an already-processed file whenever it is
 // present, so shipping one in the global template would silently give every
 // template "never process the same file twice". nil is the off state.
 func TestDefaultGlobalHasNoExistingSection(t *testing.T) {

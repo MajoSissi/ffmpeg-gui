@@ -149,7 +149,7 @@ export function createTemplatesView(ctx) {
 
 ${g ? '' : `      <div class="section">
         <div class="section__head">${icon('movie', 'sm')}<h3>视频</h3><div class="spacer"></div>
-          <span class="hint">直接复制最快；重新编码才能改分辨率。留空的项不会写进命令，交由 ffmpeg 用默认值</span></div>
+          <span class="hint">留空的项不会写进命令，交给 ffmpeg 用默认值</span></div>
         <div class="grid grid--4">
           ${field('处理方式', selectHtml('videoMode', [
             { value: 'encode', label: '重新编码' },
@@ -158,7 +158,7 @@ ${g ? '' : `      <div class="section">
           ], d.videoMode || 'encode'))}
           ${field('编码器', selectHtml('videoCodec', o.videoCodecs || [], d.videoCodec || ''), '', 'span-2')}
           ${field('码率控制', selectHtml('rateControl', o.rateControls || [], d.rateControl || 'crf'))}
-          ${field('CRF / 质量值', `<input class="input" type="number" min="0" max="51" name="crf" value="${d.crf > 0 ? d.crf : ''}" placeholder="留空 = 默认">`, '常用 18~28；留空则不传 -crf，libx264/x265 默认 23')}
+          ${field('CRF / 质量值', `<input class="input" type="number" min="0" max="51" name="crf" value="${d.crf > 0 ? d.crf : ''}" placeholder="留空 = 默认">`, '常用 18~28')}
           ${field('目标码率', `<input class="input" name="videoBitrate" value="${esc(d.videoBitrate || '')}" placeholder="如 4000k">`)}
           ${field('峰值码率', `<input class="input" name="maxRate" value="${esc(d.maxRate || '')}" placeholder="如 5000k">`)}
           ${field('缓冲大小', `<input class="input" name="bufSize" value="${esc(d.bufSize || '')}" placeholder="如 8000k">`)}
@@ -166,25 +166,25 @@ ${g ? '' : `      <div class="section">
           ${field('tune', `<input class="input" name="tune" value="${esc(d.tune || '')}" placeholder="film / animation">`)}
           ${field('Profile', `<input class="input" name="profile" value="${esc(d.profile || '')}" placeholder="high / main">`)}
           ${field('Level', `<input class="input" name="level" value="${esc(d.level || '')}" placeholder="4.1">`)}
-          ${field('像素格式', `<input class="input" name="pixFmt" value="${esc(d.pixFmt || '')}" placeholder="yuv420p">`, '兼容性优先用 yuv420p', 'span-2')}
+          ${field('像素格式', `<input class="input" name="pixFmt" value="${esc(d.pixFmt || '')}" placeholder="yuv420p">`, '', 'span-2')}
           ${field('帧率 fps', `<input class="input" name="fps" value="${esc(d.fps || '')}" placeholder="留空 = 保持原样">`, '例如 30 / 24000/1001', 'span-2')}
         </div>
       </div>
 
       <div class="section">
         <div class="section__head">${icon('crop', 'sm')}<h3>分辨率</h3><div class="spacer"></div>
-          <span class="hint">锁定长边或短边时，另一边交给 ffmpeg 按比例计算</span></div>
+          <span class="hint">另一边由 ffmpeg 按比例算出</span></div>
         <div class="grid grid--4">
           ${field('缩放方式', selectHtml('resizeMode', o.resizeModes || [], r.mode || 'keep'))}
-          ${field('长边', `<input class="input" type="number" name="longEdge" value="${r.longEdge ?? 2560}" placeholder="2560 = 2K">`, '较长的一边固定为该值，另一边由 ffmpeg 自动算出')}
-          ${field('短边', `<input class="input" type="number" name="shortEdge" value="${r.shortEdge ?? 1080}" placeholder="1080">`, '较短的一边固定为该值，另一边由 ffmpeg 自动算出')}
-          ${field('缩放算法', selectHtml('algorithm', o.scaleAlgorithms || [], r.algorithm || ''), '留空则不写 :flags=，由 ffmpeg 决定')}
+          ${field('长边', `<input class="input" type="number" name="longEdge" value="${r.longEdge ?? 2560}" placeholder="2560 = 2K">`)}
+          ${field('短边', `<input class="input" type="number" name="shortEdge" value="${r.shortEdge ?? 1080}" placeholder="1080">`)}
+          ${field('缩放算法', selectHtml('algorithm', o.scaleAlgorithms || [], r.algorithm || ''), '留空交给 ffmpeg 决定')}
           ${field('宽', `<input class="input" type="number" name="width" value="${r.width ?? 0}" placeholder="0 = 自动（按比例）">`)}
           ${field('高', `<input class="input" type="number" name="height" value="${r.height ?? 0}" placeholder="0 = 自动（按比例）">`)}
           ${field('最大宽', `<input class="input" type="number" name="maxWidth" value="${r.maxWidth ?? 0}" placeholder="0 = 不限">`)}
           ${field('最大高', `<input class="input" type="number" name="maxHeight" value="${r.maxHeight ?? 0}" placeholder="0 = 不限">`)}
           ${field('缩放比例 %', `<input class="input" type="number" name="percent" value="${r.percent ?? 50}" placeholder="50">`)}
-          ${field('对齐倍数', `<input class="input" type="number" name="multipleOf" value="${r.multipleOf ?? 2}" placeholder="2">`, '另一边自动取整到该倍数（scale 里的 -N）')}
+          ${field('对齐倍数', `<input class="input" type="number" name="multipleOf" value="${r.multipleOf ?? 2}" placeholder="2">`, '宽高自动对齐到该倍数')}
           ${field('补边颜色', selectHtml('padColor', o.padColors || [], r.padColor || 'black'))}
         </div>
         <div class="grid grid--3" style="margin-top:10px">
@@ -217,12 +217,9 @@ ${g ? '' : `      <div class="section">
           <label class="check"><input type="checkbox" name="stripMetadata"${d.stripMetadata ? ' checked' : ''}>清除元数据</label>
           <label class="check"><input type="checkbox" name="stripChapters"${d.stripChapters ? ' checked' : ''}>清除章节</label>
         </div>
-        <div class="hint" style="margin-top:10px">${icon('info', 'sm')} <span class="mono">-sn</span> 就是「排除字幕」，
-          来自上面<strong>未勾选</strong>「保留全部流」——此时只保留一路视频 + 一路音频。
-          勾选后改为 <span class="mono">-map 0</span> 并写入 <span class="mono">-c:s</span>（MP4 用 mov_text、MKV 用 copy）。</div>
         <div class="grid grid--3" style="margin-top:10px">
           ${field('混流队列上限', `<input class="input" type="number" min="0" name="maxMuxQueue" value="${d.maxMuxQueue > 0 ? d.maxMuxQueue : ''}" placeholder="留空 = 默认">`,
-            '仅在报「Too many packets buffered」时填写，例如 2048')}
+            '仅在报「Too many packets buffered」时填写')}
         </div>
       </div>
 
@@ -976,7 +973,6 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         <div class="hint" style="margin-bottom:10px">
           <span class="mono">{输入}</span> 与 <span class="mono">{输出}</span> 会在运行时替换为真实路径
           ${plan.resized ? '；缩放数值按 4K 示例计算，实际以源文件为准' : ''}。
-          队列中已有文件时，任务页的「命令预览」会显示替换后的完整命令。
         </div>
       </div>
       <div class="code-block" style="margin:0 16px 16px;padding:0;border:1px solid var(--outline);border-radius:12px;max-height:340px">${commandHtml(plan.bin, plan.args)}</div>`;

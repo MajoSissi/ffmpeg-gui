@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ffmpeggui/internal/store"
 	"ffmpeggui/internal/sysx"
 )
 
@@ -231,45 +230,3 @@ func TestAttachSuspendAdoptsMatchingPid(t *testing.T) {
 	}
 }
 
-// misread as "an encode was interrupted here". Every caller checks for a real
-// non-empty output first and bails out before reaching isPartial, so the leftover
-// file is inert. This is why there is no pruner sweeping for stale sidecars.
-func TestOrphanedMarkerIsInert(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "in.mp4")
-	out := filepath.Join(dir, "in_out.mp4")
-	writeFile(t, src, "source")
-	markPartial(out) // ...and then the output never materialised
-
-	r, job := newPolicyRunner(t, src, dir)
-	tpl := store.Template{Existing: &store.ExistingSpec{}}
-	if stop := r.handleProcessed(job, store.Settings{}, tpl, out); stop {
-		t.Error("a marker with no output must not skip the file")
-	}
-	// The marker stays put -- it belongs to a run the app knows nothing about, and
-	// deleting it here would be guessing.
-	if !isPartial(out) {
-		t.Error("the orphaned marker was removed; it is not this function's to clean up")
-	}
-}
-
-// A partial output must not stop the run: handleProcessed has to leave the job in
-// its pre-pipeline state so the encoder starts on a job that does not already
-// claim to have finished.
-func TestPartialOutputDoesNotBlockRetry(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "in.mp4")
-	out := filepath.Join(dir, "in_out.mp4")
-	writeFile(t, src, "source")
-	writeFile(t, out, "truncated")
-	markPartial(out)
-
-	r, job := newPolicyRunner(t, src, dir)
-	tpl := store.Template{Existing: &store.ExistingSpec{}}
-	if stop := r.handleProcessed(job, store.Settings{}, tpl, out); stop {
-		t.Fatal("the retry was skipped")
-	}
-	if job.Status == StatusSkipped {
-		t.Error("job was marked skipped even though the output is a leftover")
-	}
-}

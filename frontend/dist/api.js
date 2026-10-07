@@ -133,7 +133,7 @@ function mkJob(id, name, w, h, status, progress, extra = {}) {
     duration: extra.duration ?? 754, size: extra.size ?? 1_820_000_000,
     infoBefore: mkInfo(name, w, h, extra), infoAfter: extra.after ?? null,
     queuedAt: new Date().toISOString(), startedAt: extra.startedAt ?? '', endedAt: '',
-    elapsedMs: extra.elapsedMs ?? 0, logTail: [], logLineCount: 0, recordId: '',
+    elapsedMs: extra.elapsedMs ?? 0, logTail: [], logLineCount: 0, outputDeleted: false, recordId: '',
   };
 }
 
@@ -469,11 +469,33 @@ const mock = {
     MOCK_STATE.stats.paused = false;
     emitMock('queue:state', { ...MOCK_STATE.stats });
   },
-  RemoveJob: () => 0, RemoveJobs: () => 0, RemoveFinished: () => 0,
-  ClearQueue: () => 0, RetryFailed: () => 0,
+  // RemoveJob / RemoveJobs / RemoveFinished / ClearQueue / RetryFailed are defined
+  // further up in this same literal. They must not be repeated here: a duplicate key
+  // silently wins, and these five used to reappear as `() => 0` no-ops -- so every
+  // 移除 in a browser preview did nothing at all, and the row that stayed put looked
+  // like a rendering bug rather than a mock one.
+  //
+  // The browser preview has no disk to delete from, so 删除 only marks the rows. That
+  // is enough to exercise the paths that matter for the UI -- the confirm dialog, the
+  // toast, the row's 输出已删除 state -- without pretending to have removed a file.
+  DeleteOutput: (id) => mock.DeleteOutputs([id]),
+  DeleteOutputs: (ids) => {
+    const want = new Set(ids || []);
+    let deleted = 0;
+    MOCK_STATE.jobs.forEach((j) => {
+      if (!want.has(j.id) || j.outputDeleted || !j.output) return;
+      if (['pending', 'preparing', 'running'].includes(j.status)) return;
+      j.outputDeleted = true;
+      deleted++;
+      emitMock('job:update', { ...j });
+    });
+    return { deleted, skipped: want.size - deleted, paths: [], errors: [] };
+  },
 };
 
-/* A tiny live ticker so the mock shows moving progress in previews. */
+/* A tiny live ticker so the mock shows moving progress in previews -- and a log
+   that actually streams, which is the only way to see how the log panel follows
+   without a real encode running. */
 if (isMock) {
   setInterval(() => {
     const running = MOCK_STATE.jobs.filter((j) => j.status === 'running');
@@ -484,6 +506,12 @@ if (isMock) {
       j.speed = 3.2 + Math.sin(Date.now() / 4000) * 0.5;
       j.message = `${(j.progress * 100).toFixed(1)}% · ${fmtClock(j.outTimeMs / 1000)} · ${j.speed.toFixed(1)}x`;
       emitMock('job:update', { ...j });
+      const line = `frame=${Math.round(j.outTimeMs / 42)} fps=${(29.97 * j.speed).toFixed(0)}`
+        + ` size=${Math.round(j.outTimeMs * 1.1)}kB time=${fmtClock(j.outTimeMs / 1000)}.00`
+        + ` bitrate=88560.1kbits/s speed=${j.speed.toFixed(2)}x`;
+      MOCK_STATE.log.push([j.id, line]);
+      j.logLineCount = (j.logLineCount || 0) + 1;
+      emitMock('job:log', { jobId: j.id, lines: [line] });
     });
   }, 1000);
 }
@@ -533,6 +561,8 @@ export const api = {
   clearQueue: () => call('ClearQueue'),
   retryFailed: () => call('RetryFailed'),
   jobLogs: (id) => call('JobLogs', id),
+  deleteOutput: (id) => call('DeleteOutput', id),
+  deleteOutputs: (ids) => call('DeleteOutputs', ids),
   setJobTemplate: (jobId, tid) => call('SetJobTemplate', jobId, tid),
   setAllTemplates: (tid) => call('SetAllTemplates', tid),
   probe: (p) => call('Probe', p),

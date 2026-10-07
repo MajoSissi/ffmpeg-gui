@@ -15,7 +15,7 @@ func mkInfo(path string) *media.Info {
 
 // globalWith builds a global template carrying the given output rules. The
 // engine no longer reads output rules from settings -- they all come from here.
-// The 「已处理过的源文件」 policy is a separate section and irrelevant here:
+// The 「已处理过的文件」 policy is a separate section and irrelevant here:
 // ResolveOutput names the path and leaves an occupied one alone.
 func globalWith(mode, suffix, pattern string) store.Template {
 	g := store.DefaultGlobalTemplate()
@@ -312,5 +312,113 @@ func TestExpandOutputPatternDropsExt(t *testing.T) {
 		if ExpandOutputPattern(tok, n) == tok || ExpandPattern(tok, n) == tok {
 			t.Errorf("%s was not expanded", tok)
 		}
+	}
+}
+
+// A dot in the middle of a name is not an extension. Reported case: a source named
+// "qqq.123.mp4" produced the output "qqq.123" -- no extension at all.
+//
+// The cause is that the stem of "qqq.123.mp4" is "qqq.123", and filepath.Ext of
+// that is ".123". A guard written as `Ext(name) == ""` therefore concluded the name
+// was complete and skipped appending the container's extension. ffmpeg then had no
+// extension to infer a muxer from, so the result was unplayable under its own name.
+func TestResolveOutputKeepsExtWhenStemHasDots(t *testing.T) {
+	root := filepath.Join("E:", "BiliBili")
+	global := globalWith(store.OutputSibling, "_out", "{name}")
+
+	for _, tc := range []struct{ src, want string }{
+		{"qqq.123.mp4", "qqq.123.mp4"},
+		{"v1.2.3.final.mp4", "v1.2.3.final.mp4"},
+		{"[1080p].BDRip.mp4", "[1080p].BDRip.mp4"},
+		{"no-dots.mp4", "no-dots.mp4"},
+	} {
+		eff := store.Template{Container: "mp4", OutputOverride: true}.Effective(global)
+		got, err := ResolveOutput(OutputRequest{
+			Info: mkInfo(filepath.Join(root, tc.src)), Tpl: eff, SrcRoot: root,
+		})
+		if err != nil {
+			t.Fatalf("%s: ResolveOutput: %v", tc.src, err)
+		}
+		// The suffix lands on the top folder, so the file keeps its name.
+		want := filepath.Join(root+"_out", tc.want)
+		if got != want {
+			t.Errorf("%s -> %q, want %q", tc.src, got, want)
+		}
+	}
+}
+
+// The extension still follows the container, and a pattern that already spells it
+// out is not given a second one.
+func TestResolveOutputDottedStemFollowsContainer(t *testing.T) {
+	root := filepath.Join("E:", "BiliBili")
+	global := globalWith(store.OutputSibling, "_out", "{name}")
+
+	// Source is mp4, container asks for mkv: the dotted stem must survive the swap.
+	eff := store.Template{Container: "mkv", OutputOverride: true}.Effective(global)
+	got, err := ResolveOutput(OutputRequest{
+		Info: mkInfo(filepath.Join(root, "qqq.123.mp4")), Tpl: eff, SrcRoot: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root+"_out", "qqq.123.mkv"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	// A pattern that already ends with the container extension must not double it.
+	explicit := store.Template{
+		Container: "mp4", OutputOverride: true, OutPattern: "{name}.mp4",
+	}.Effective(global)
+	got2, err := ResolveOutput(OutputRequest{
+		Info: mkInfo(filepath.Join(root, "qqq.123.mp4")), Tpl: explicit, SrcRoot: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root+"_out", "qqq.123.mp4"); got2 != want {
+		t.Errorf("explicit extension gave %q, want %q", got2, want)
+	}
+}
+
+// EnsureExt is the rule in one place: compare against the extension we intend to
+// write, never against "is there a dot".
+func TestEnsureExt(t *testing.T) {
+	for _, tc := range []struct{ name, ext, want string }{
+		{"clip", "mp4", "clip.mp4"},
+		{"clip.mp4", "mp4", "clip.mp4"},
+		{"clip.MP4", "mp4", "clip.MP4"}, // already right, case-insensitively
+		{"qqq.123", "mp4", "qqq.123.mp4"},
+		{"v1.2.3", "mkv", "v1.2.3.mkv"},
+		{"clip.", "mp4", "clip..mp4"}, // trailing dot handled by the caller
+		{"clip", "", "clip"},          // no container: leave it alone
+	} {
+		if got := EnsureExt(tc.name, tc.ext); got != tc.want {
+			t.Errorf("EnsureExt(%q, %q) = %q, want %q", tc.name, tc.ext, got, tc.want)
+		}
+	}
+}
+
+// Relocating a file has the same trap: the moved file keeps its own extension, and
+// "qqq.123" is not a file that already has one.
+func TestRelocateKeepsExtWhenStemHasDots(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "qqq.123.mp4")
+	writeFile(t, src, "payload")
+
+	dest, err := Relocate(MoveRequest{
+		Src:     src,
+		SrcRoot: dir,
+		Dest:    store.DestRule{Mode: store.OutputCustom, Dir: filepath.Join(dir, "moved")},
+		// {name} only: the extension has to be re-attached by the mover.
+		Pattern: "{name}",
+	})
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if want := filepath.Join(dir, "moved", "qqq.123.mp4"); dest != want {
+		t.Errorf("got %q, want %q", dest, want)
+	}
+	if !existsAt(t, dest) {
+		t.Error("the file did not actually land at the reported path")
 	}
 }

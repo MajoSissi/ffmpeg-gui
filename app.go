@@ -86,11 +86,10 @@ func (a *App) startup(ctx context.Context) {
 		// The engine reads the defaults straight off the global template, so
 		// editing it takes effect without any extra plumbing.
 		GlobalTemplate: a.GlobalTemplate,
-	}, a.emit, a.appendRecord)
+	}, a.emitEngine, a.appendRecord)
 
 	a.startTrayIfEnabled()
 	go a.historySaver()
-
 	// No WindowHide here on purpose. Wails runs OnStartup in a goroutine *after*
 	// it has already put the window on screen, so hiding it from here can only
 	// ever be a race the user watches happen. "Start hidden" is decided before
@@ -179,6 +178,9 @@ func (a *App) startTrayIfEnabled() {
 		a.tray = tray.New(tray.Callbacks{
 			OnShow: a.showWindow,
 			OnQuit: func() { a.Quit() },
+			// The icon ignores writes before it exists, so the queue the user
+			// already has is pushed once the tray is really up.
+			OnReady: func() { a.refreshTrayTooltip(a.runner.Stats()) },
 		}, a.trayIcon, "", "FFmpeg GUI — 媒体批量处理")
 	}
 	a.tray.Start()
@@ -326,6 +328,12 @@ func (a *App) SaveTemplate(t store.Template) (store.Template, error) {
 	if err := store.SaveTemplates(list); err != nil {
 		return t, err
 	}
+	// The 「已处理过的文件」record means "this file came out of this template
+	// already". Editing the template changes what it would produce, so the record
+	// no longer describes anything: drop it, otherwise re-queueing the same
+	// folder after a change would report 已跳过 for every file and quietly not
+	// apply the change.
+	a.runner.ForgetTemplate(t.ID)
 	a.emit("templates:changed", list)
 	return t, nil
 }
@@ -351,6 +359,10 @@ func (a *App) SaveGlobalTemplate(t store.Template) (store.Template, error) {
 			if err := store.SaveTemplates(list); err != nil {
 				return t, err
 			}
+			// Every template inherits from this one, so a change here changes
+			// what all of them produce. Drop every record for the same reason
+			// SaveTemplate drops one template's.
+			a.runner.ForgetAllProcessed()
 			a.applyConcurrency()
 			a.emit("templates:changed", list)
 			return t, nil
@@ -783,6 +795,12 @@ func (a *App) RemoveJobs(ids []string) int { return a.runner.RemoveJobs(ids) }
 // RemoveFinished clears every completed job.
 func (a *App) RemoveFinished() int { return a.runner.ClearFinished() }
 
+// DeleteOutput deletes the file one job produced, leaving the row in place.
+func (a *App) DeleteOutput(id string) engine.DeleteResult { return a.runner.DeleteOutput(id) }
+
+// DeleteOutputs deletes the files several jobs produced, leaving the rows in place.
+func (a *App) DeleteOutputs(ids []string) engine.DeleteResult { return a.runner.DeleteOutputs(ids) }
+
 // ClearQueue empties the queue.
 func (a *App) ClearQueue() int { return a.runner.ClearAll() }
 
@@ -1198,7 +1216,7 @@ type Options struct {
 	PadColors       []Option `json:"padColors"`
 	OutputModes     []Option `json:"outputModes"`
 	// FilterActions is the shared 处理方式 list for the three sections that move a
-	// file somewhere: 已处理过的源文件, 被排除的文件 and the error / warning
+	// file somewhere: 已处理过的文件, 被排除的文件 and the error / warning
 	// policies. They all read the same way on purpose -- a rule you learned in one
 	// place works in the other two.
 	//
@@ -1285,14 +1303,53 @@ func (a *App) emit(name string, payload any) {
 	wailsruntime.EventsEmit(a.ctx, name, payload)
 }
 
-func (a *App) emitState() {
-	a.emit(engine.EventQueue, a.runner.Stats())
-	if a.tray != nil {
-		st := a.runner.Stats()
-		if st.Total > 0 {
-			a.tray.SetTooltip(fmt.Sprintf("FFmpeg GUI — %d/%d 完成", st.Done+st.Warning+st.Failed, st.Total))
+func (a *App) emitState() { a.emitEngine(engine.EventQueue, a.runner.Stats()) }
+
+// emitEngine is the engine's event sink.
+//
+// The tray tooltip is refreshed here, on every queue event, rather than in
+// emitState: emitState only ever ran for 开始 and 保存设置, so pausing, stopping,
+// clearing or removing rows left the hover text describing a queue that no
+// longer existed -- the tooltip simply stopped changing for the rest of the
+// session. Every mutation ends in a queue event, so this is the one place that
+// cannot miss one.
+func (a *App) emitEngine(name string, payload any) {
+	if name == engine.EventQueue {
+		if st, ok := payload.(engine.Stats); ok {
+			a.refreshTrayTooltip(st)
 		}
 	}
+	a.emit(name, payload)
+}
+
+// refreshTrayTooltip puts the queue state on the icon.
+func (a *App) refreshTrayTooltip(st engine.Stats) {
+	if a.tray == nil {
+		return
+	}
+	a.tray.SetTooltip(trayTooltip(st))
+}
+
+// trayTooltip renders a queue state as hover text, or "" for "nothing to report",
+// which the tray turns back into its idle title.
+//
+// An empty queue has to fall back rather than keep the last count: "3/9 完成" over
+// an icon whose queue was cleared is worse than no information at all, and it is
+// exactly what the old code did -- it only ever wrote the tooltip when Total > 0.
+func trayTooltip(st engine.Stats) string {
+	if st.Total == 0 {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("%d/%d 完成", st.Finished(), st.Total)}
+	switch {
+	case st.Paused:
+		parts = append(parts, "已暂停")
+	case !st.Started:
+		parts = append(parts, "未开始")
+	case st.Running > 0:
+		parts = append(parts, fmt.Sprintf("%d 处理中", st.Running))
+	}
+	return "FFmpeg GUI — " + strings.Join(parts, " · ")
 }
 
 func (a *App) emitToastKind(kind, msg string) {
@@ -1330,7 +1387,7 @@ var destModes = []Option{
 }
 
 // relocateActions is the 处理方式 list for the three sections that move a file:
-// 已处理过的源文件, 被排除的文件, and the error / warning policies.
+// 已处理过的文件, 被排除的文件, and the error / warning policies.
 var relocateActions = []Option{
 	{"keep", "不处理，留在原处"},
 	{"move", "移动到目标目录"},
@@ -1424,7 +1481,7 @@ func buildOptions() Options {
 		OutputModes:   destModes,
 		DestModes:     destModes,
 		FilterActions: relocateActions,
-		// The 「已处理过的源文件」 section reads exactly like the filter's, so it
+		// The 「已处理过的文件」 section reads exactly like the filter's, so it
 		// gets the same list rather than a near-copy that can drift.
 		ExistingActions: relocateActions,
 		ProblemActions: append(append([]Option{}, relocateActions...),

@@ -50,6 +50,14 @@ export function DataDir() {
   return window['go']['main']['App']['DataDir']();
 }
 
+export function DeleteOutput(arg1) {
+  return window['go']['main']['App']['DeleteOutput'](arg1);
+}
+
+export function DeleteOutputs(arg1) {
+  return window['go']['main']['App']['DeleteOutputs'](arg1);
+}
+
 export function DeleteTemplate(arg1) {
   return window['go']['main']['App']['DeleteTemplate'](arg1);
 }

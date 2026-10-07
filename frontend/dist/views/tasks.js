@@ -9,12 +9,34 @@ import { effective } from './sections.js';
 export function createTasksView(ctx) {
   const el = document.createElement('section');
   el.className = 'page';
+
+  /**
+   * The status filter's choices.
+   *
+   * Grouped by the question being asked rather than one entry per internal status:
+   * 已完成 and 完成(警告) are the same answer to "which of these actually got
+   * encoded", and 已跳过 / 已排除 both mean the file was deliberately left alone.
+   * `match` takes a job, so this one list drives both the dropdown and the filter.
+   */
+  const STATUS_FILTERS = [
+    { value: '', label: '全部状态', match: () => true },
+    { value: 'pending', label: '排队中', match: (j) => j.status === 'pending' },
+    { value: 'active', label: '处理中', match: (j) => j.status === 'running' || j.status === 'preparing' },
+    { value: 'done', label: '已完成', match: (j) => j.status === 'done' || j.status === 'warning' },
+    { value: 'failed', label: '失败', match: (j) => j.status === 'failed' },
+    { value: 'canceled', label: '已取消', match: (j) => j.status === 'canceled' },
+    { value: 'skipped', label: '已跳过 / 已排除', match: (j) => j.status === 'skipped' || j.status === 'filtered' },
+  ];
+
   el.innerHTML = `
     <div class="toolbar">
       <button class="btn btn--tonal" data-act="add-files">${icon('add')}添加文件</button>
       <button class="btn btn--tonal" data-act="add-folder">${icon('folderOpen')}添加文件夹</button>
       <div class="sep"></div>
       <select class="select" data-role="template" title="处理模板"></select>
+      <select class="select" data-role="status-filter" title="只显示某一类状态的任务">
+        ${STATUS_FILTERS.map((f) => `<option value="${f.value}">${f.label}</option>`).join('')}
+      </select>
       <div class="sep"></div>
       <button class="btn btn--filled" data-act="start">${icon('play')}开始</button>
       <button class="btn" data-act="pause">${icon('pause')}暂停</button>
@@ -35,7 +57,8 @@ export function createTasksView(ctx) {
       <div class="spacer"></div>
       <button class="btn btn--text btn--sm" data-act="select-all">全选</button>
       <button class="btn btn--text btn--sm" data-act="select-none">取消选择</button>
-      <button class="btn btn--tonal btn--sm" data-act="bulk-remove">${icon('trash', 'sm')}移除所选</button>
+      <button class="btn btn--tonal btn--sm" data-act="bulk-delete">${icon('trash', 'sm')}删除输出</button>
+      <button class="btn btn--text btn--sm" data-act="bulk-remove">${icon('close', 'sm')}移除所选</button>
     </div>
 
     <div class="table-wrap" data-role="table-wrap">
@@ -56,8 +79,8 @@ export function createTasksView(ctx) {
       </table>
       <div class="empty" data-role="empty">
         ${icon('movie')}
-        <h3>队列里还没有文件</h3>
-        <p>点击「添加文件」或「添加文件夹」，也可以把文件直接拖进窗口。支持多选文件与多选目录。</p>
+        <h3 data-role="empty-title">队列里还没有文件</h3>
+        <p data-role="empty-text">点击「添加文件」或「添加文件夹」，也可以把文件直接拖进窗口。支持多选文件与多选目录。</p>
       </div>
     </div>
     <div class="panel" data-role="panel">
@@ -91,6 +114,7 @@ export function createTasksView(ctx) {
   const panelEl = el.querySelector('[data-role=panel]');
   const gripEl = el.querySelector('[data-role=grip]');
   const tplSelect = el.querySelector('[data-role=template]');
+  const statusSelect = el.querySelector('[data-role=status-filter]');
   const bulkbarEl = el.querySelector('[data-role=bulkbar]');
 
   const local = {
@@ -99,6 +123,9 @@ export function createTasksView(ctx) {
     renderedIds: [],
     followLog: true,
     collapsed: false,
+    // '' = 全部状态. A view setting, not a queue one: it never reaches the backend,
+    // and a hidden job is still queued, still processed and still counted.
+    statusFilter: '',
     // Anchor for shift-click range selection: the last row picked without a modifier.
     anchorId: '',
     // The command currently rendered in the preview, kept so 复制 has something
@@ -170,6 +197,22 @@ export function createTasksView(ctx) {
     }
   });
 
+  /**
+   * The filter is a view setting, so it changes nothing but what is rendered:
+   * hidden jobs are still queued, still processed and still counted by the toolbar.
+   * The direction of the mistake matters -- a filter that also stopped the queue
+   * would be a trap.
+   */
+  statusSelect.addEventListener('change', () => {
+    local.statusFilter = statusSelect.value;
+    // The rows that just left the screen cannot stay checked: 全选 and 删除输出 both
+    // read the checked set, and acting on a row nobody can see is how a filter turns
+    // into a way to delete the wrong files.
+    local.checked.clear();
+    renderJobs();
+    paintSelection();
+  });
+
   /* -------------------------------------------------------------- actions */
 
   el.addEventListener('click', async (e) => {
@@ -211,8 +254,10 @@ export function createTasksView(ctx) {
         toast(n > 0 ? `已清理 ${n} 个任务` : '没有可清理的任务', 'info');
       } else if (act === 'bulk-remove') {
         await removeChecked();
+      } else if (act === 'bulk-delete') {
+        await deleteOutputs([...local.checked]);
       } else if (act === 'select-all') {
-        local.checked = new Set(ctx.state.jobs.map((j) => j.id));
+        local.checked = new Set(local.renderedIds);
         paintSelection();
       } else if (act === 'select-none') {
         local.checked.clear();
@@ -225,11 +270,10 @@ export function createTasksView(ctx) {
         applyPanel();
       } else if (act === 'reveal') {
         await shellAction(ctx.api.revealPath(btn.dataset.path));
+      } else if (act === 'delete-output') {
+        await deleteOutputs([btn.dataset.id]);
       } else if (act === 'remove') {
-        await ctx.api.removeJob(btn.dataset.id);
-        if (ctx.state.selectedJobId === btn.dataset.id) ctx.state.selectedJobId = '';
-        local.checked.delete(btn.dataset.id);
-        await refreshJobs();
+        await removeOne(btn.dataset.id);
       } else if (act === 'play-one') {
         ctx.state.currentTemplateId = tplSelect.value;
         await ctx.api.startQueue();
@@ -243,6 +287,10 @@ export function createTasksView(ctx) {
       local.tab = tab.dataset.tab;
       el.querySelectorAll('[data-tab]').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === local.tab));
       applyTab();
+      // Coming back to the log means showing what arrived while you were away --
+      // and landing on the newest line again rather than wherever the frozen
+      // scrollbar happened to be.
+      if (local.tab === 'log') showHeldLog();
       if (local.tab === 'command') await refreshCommand();
       return;
     }
@@ -250,42 +298,61 @@ export function createTasksView(ctx) {
     const row = e.target.closest('tr[data-id]');
     if (row && !e.target.closest('input,button,a')) {
       rowPicked(row.dataset.id, e);
-      if (local.tab === 'command') await refreshCommand();
-      else renderDetails();
+      await reflectSelection();
     }
   });
 
   /**
-   * Explorer-style row picking. A plain click focuses one row and makes it the whole
-   * selection; Ctrl toggles a row in place; Shift takes everything from the anchor to
-   * here. The checkbox column mirrors the same set, so there is exactly one selection
-   * and the bulk bar always describes it truthfully.
+   * Point the panel below at whatever row is focused now.
+   *
+   * The outlined row and the panel are one selection seen twice, so every way of
+   * moving the focus has to move both. Ticking a row's checkbox used to move only the
+   * outline -- which left one file's log sitting under another file's name.
+   */
+  async function reflectSelection() {
+    const id = ctx.state.selectedJobId;
+    if (!id) {
+      clearLog();
+      renderDetails();
+      return;
+    }
+    if (local.tab === 'log') await loadLog(id);
+    else if (local.tab === 'command') await refreshCommand();
+    else renderDetails();
+  }
+
+  /**
+   * Clicking a row focuses it; it does not select it.
+   *
+   * The two used to be the same thing, so a plain click on a row ticked its
+   * checkbox and opened the bulk bar -- reading a log meant arming a batch
+   * operation. Now a plain click only moves the focus (the outlined row, which is
+   * what the panel below shows), and ticking is something the checkbox column does.
+   * Ctrl and Shift stay on the row because extending a selection across a range is
+   * the one gesture a checkbox cannot express.
    *
    * @param {string} id job id of the clicked row
    * @param {MouseEvent} e
    */
   function rowPicked(id, e) {
     const ids = local.renderedIds;
+    ctx.state.selectedJobId = id;
     if (e.ctrlKey || e.metaKey) {
       if (local.checked.has(id)) local.checked.delete(id); else local.checked.add(id);
-      ctx.state.selectedJobId = id;
       local.anchorId = id;
     } else if (e.shiftKey && local.anchorId && ids.includes(local.anchorId)) {
       const a = ids.indexOf(local.anchorId);
       const b = ids.indexOf(id);
       local.checked = new Set(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
-      ctx.state.selectedJobId = id;
     } else {
-      local.checked = new Set([id]);
-      ctx.state.selectedJobId = id;
       local.anchorId = id;
     }
     paintSelection();
   }
 
-  el.addEventListener('change', (e) => {
+  el.addEventListener('change', async (e) => {
     if (e.target.matches('[data-role=check-all]')) {
-      local.checked = e.target.checked ? new Set(ctx.state.jobs.map((j) => j.id)) : new Set();
+      local.checked = e.target.checked ? new Set(local.renderedIds) : new Set();
       paintSelection();
       return;
     }
@@ -295,6 +362,10 @@ export function createTasksView(ctx) {
       ctx.state.selectedJobId = id;
       local.anchorId = id;
       paintSelection();
+      // Ticking a row focuses it, so the panel has to follow: the outline and the log
+      // below it are the same selection, and moving only one of them shows the wrong
+      // file's output under the right file's name.
+      await reflectSelection();
     }
   });
 
@@ -309,6 +380,33 @@ export function createTasksView(ctx) {
     paintSelection();
   }
 
+  /**
+   * Remove one row.
+   *
+   * The repaint is unconditional, and that is the whole fix here. It used to run
+   * only on the way back from the call -- but the call *throws* when the job is
+   * already gone, so the second click on a row that had just been removed rejected
+   * and skipped the repaint entirely: the row stayed, and the button did nothing
+   * that could be seen.
+   */
+  async function removeOne(id) {
+    try {
+      await ctx.api.removeJob(id);
+    } catch (err) {
+      // Already gone is the one case worth carrying on from: the desired end state
+      // is a row that is not there, and it is not there.
+      if (!/任务不存在/.test(String(err?.message || err))) {
+        toast(String(err?.message || err), 'error', 5000);
+      }
+    }
+    if (ctx.state.selectedJobId === id) {
+      ctx.state.selectedJobId = '';
+      clearLog();
+    }
+    local.checked.delete(id);
+    await refreshJobs();
+  }
+
   async function removeChecked() {
     const ids = [...local.checked];
     if (!ids.length) return;
@@ -320,9 +418,42 @@ export function createTasksView(ctx) {
     if (!(await confirmDialog('移除所选任务', msg, '移除', true))) return;
     const n = await ctx.api.removeJobs(ids);
     local.checked.clear();
-    ctx.state.selectedJobId = '';
+    if (ids.includes(ctx.state.selectedJobId)) {
+      ctx.state.selectedJobId = '';
+      clearLog();
+    }
     await refreshJobs();
     toast(n > 0 ? `已移除 ${n} 个任务` : '所选任务已被移除', 'success');
+  }
+
+  /**
+   * Delete the files behind the given jobs, and keep every row.
+   *
+   * Deliberately its own button rather than a rider on 移除: throwing away a file
+   * that may have taken an hour to encode is not the same decision as clearing a
+   * line off a list, and after a removal the row -- the only thing that still says
+   * what the file was -- is gone as well. Nothing here removes a job.
+   */
+  async function deleteOutputs(ids) {
+    const jobs = ctx.state.jobs.filter((j) => ids.includes(j.id) && canDeleteOutput(j));
+    if (!jobs.length) {
+      toast('所选任务没有可删除的输出文件', 'info', 2400);
+      return;
+    }
+    const names = jobs.slice(0, 3).map((j) => j.outputName || j.inputName).join('、');
+    const extra = jobs.length > 3 ? ` 等 ${jobs.length} 个文件` : '';
+    const running = jobs.length - jobs.filter((j) => !['running', 'preparing'].includes(j.status)).length;
+    const ok = await confirmDialog('删除输出文件',
+      `将删除 ${names}${extra}${running ? `（其中 ${running} 个仍在处理，会被跳过）` : ''}。`
+      + '任务会留在列表里，但文件无法恢复。',
+      '删除', true);
+    if (!ok) return;
+    const res = await ctx.api.deleteOutputs(jobs.map((j) => j.id));
+    const failed = (res?.errors || []).length;
+    if (res?.deleted) toast(`已删除 ${res.deleted} 个输出文件`, 'success');
+    else if (!failed) toast('没有文件被删除', 'info', 2400);
+    (res?.errors || []).slice(0, 3).forEach((m) => toast(m, 'error', 6000));
+    await refreshJobs();
   }
 
   // double-click a row -> open the file
@@ -457,9 +588,33 @@ export function createTasksView(ctx) {
     return ctx.state.jobs.find((j) => j.id === ctx.state.selectedJobId) || null;
   }
 
+  /** The active filter entry; '' is the 全部状态 entry, so this is never undefined. */
+  function activeFilter() {
+    return STATUS_FILTERS.find((f) => f.value === local.statusFilter) || STATUS_FILTERS[0];
+  }
+
+  function matchesFilter(job) {
+    return activeFilter().match(job);
+  }
+
+  /** Only the rows the filter lets through. The queue itself is untouched. */
+  function visibleJobs() {
+    return ctx.state.jobs.filter(matchesFilter);
+  }
+
+  /**
+   * The queue keeps working on a job the filter is hiding, so the counter has to
+   * show both numbers: a total that silently dropped to the filtered count would
+   * say the other files were gone.
+   */
+  function filterSummary(shown, total) {
+    return local.statusFilter ? `${shown} / ${total} 个任务` : `${total} 个任务`;
+  }
+
   function renderToolbar() {
     const s = ctx.state.stats || {};
-    el.querySelector('[data-role=stat-total]').textContent = `${s.total || 0} 个任务`;
+    el.querySelector('[data-role=stat-total]').textContent
+      = filterSummary(local.renderedIds.length, ctx.state.jobs.length);
     const done = (s.done || 0) + (s.warning || 0);
     const doneChip = el.querySelector('[data-role=stat-done]');
     doneChip.hidden = done === 0;
@@ -625,30 +780,64 @@ export function createTasksView(ctx) {
     ];
   }
 
+  /**
+   * Is there a produced file behind this row that 删除 could still remove?
+   *
+   * Only jobs that got far enough to name an output are offered: a pending job has
+   * nothing, and a running one is holding its output open -- the backend refuses
+   * those, and a button that always fails is worse than a greyed-out one.
+   */
+  function canDeleteOutput(job) {
+    return !!job.output && !job.outputDeleted
+      && !['pending', 'preparing', 'running'].includes(job.status);
+  }
+
+  /**
+   * The row's buttons.
+   *
+   * Shared with patchJob, because all three depend on the status and the fast path
+   * only writes the cells it knows about. A finished row still offering 定位源文件,
+   * or a 删除 that stays grey after the output appeared, is a row that lies about what
+   * can be done with it.
+   */
+  function actionsCell(job) {
+    // 输出已删除 means there is nothing out there to show, so 定位 falls back to the
+    // source rather than opening a path that no longer exists.
+    const revealOutput = (job.status === 'done' || job.status === 'warning') && !job.outputDeleted;
+    return `
+        ${revealOutput
+          ? `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.output)}" title="在资源管理器中显示">${icon('external', 'sm')}</button>`
+          : `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.input)}" title="定位源文件">${icon('folderOpen', 'sm')}</button>`}
+        <button class="btn btn--text btn--icon btn--sm" data-act="delete-output" data-id="${esc(job.id)}"
+          title="${job.outputDeleted ? '输出文件已删除' : canDeleteOutput(job) ? '删除输出文件（任务保留在列表里）' : '没有可删除的输出文件'}"
+          ${canDeleteOutput(job) ? '' : 'disabled'}>${icon('trash', 'sm')}</button>
+        <button class="btn btn--text btn--icon btn--sm" data-act="remove" data-id="${esc(job.id)}" title="从列表移除（不动文件）">${icon('close', 'sm')}</button>`;
+  }
+
   function rowHtml(job) {
     const cls = [local.checked.has(job.id) ? 'is-checked' : '', job.status === 'running' && !job.frozen ? 'is-running' : ''].join(' ');
     const [res, dur, size] = measureCells(job);
+    // 输出已删除 is a state the row has to admit, not a note to bury: an 打开输出
+    // button that opens nothing is worse than no button, and the queue keeps the row
+    // on purpose, so it is the only place that can say the file is gone.
+    const sub = job.status === 'filtered' || job.status === 'skipped'
+      ? esc(truncate(job.message || (job.output || job.input), 76))
+      : esc(truncate(folderOf(job.output || job.input), 76));
+    const subLine = job.outputDeleted
+      ? `<span style="color:var(--warn)">输出已删除</span>${sub ? ` · ${sub}` : ''}`
+      : sub;
     return `<tr data-id="${esc(job.id)}" class="${cls}">
       <td class="col-check"><label class="check"><input type="checkbox"${local.checked.has(job.id) ? ' checked' : ''}></label></td>
       <td class="name">
         <div class="nowrap" title="${esc(job.input)}">${esc(job.inputName)}</div>
-        <div class="cell-sub nowrap" title="${esc(job.output || job.input)}">${
-          job.status === 'filtered' || job.status === 'skipped'
-            ? esc(truncate(job.message || (job.output || job.input), 76))
-            : esc(truncate(folderOf(job.output || job.input), 76))
-        }</div>
+        <div class="cell-sub nowrap" title="${esc(job.output || job.input)}">${subLine}</div>
       </td>
       <td class="num">${res}</td>
       <td class="num">${dur}</td>
       <td class="num">${size}</td>
       <td>${statusChip(job.status, job.frozen)}</td>
       <td>${progressCell(job)}</td>
-      <td class="actions">
-        ${job.status === 'done' || job.status === 'warning'
-          ? `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.output)}" title="在资源管理器中显示">${icon('external', 'sm')}</button>`
-          : `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.input)}" title="定位源文件">${icon('folderOpen', 'sm')}</button>`}
-        <button class="btn btn--text btn--icon btn--sm" data-act="remove" data-id="${esc(job.id)}" title="移除">${icon('close', 'sm')}</button>
-      </td>
+      <td class="actions">${actionsCell(job)}</td>
     </tr>`;
   }
 
@@ -659,20 +848,44 @@ export function createTasksView(ctx) {
   }
 
   function renderJobs() {
-    const jobs = ctx.state.jobs;
+    // The toolbar acts on the queue, the table shows the filter's slice of it. Keeping
+    // the two apart is the point: hiding the failed rows must not disable 重试.
+    const all = ctx.state.jobs;
+    const jobs = visibleJobs();
     emptyEl.hidden = jobs.length > 0;
-    const hasFinished = jobs.some((j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status));
-    const canStart = jobs.some((j) => j.status === 'pending');
+    if (!jobs.length) paintEmptyState(all.length);
+    const hasFinished = all.some((j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status));
+    const canStart = all.some((j) => j.status === 'pending');
     el.querySelector('[data-act=start]').disabled = !canStart;
-    el.querySelector('[data-act=stop]').disabled = !jobs.some((j) => j.status === 'running' || j.status === 'preparing' || j.status === 'pending');
-    el.querySelector('[data-act=retry]').disabled = !jobs.some((j) => ['failed', 'canceled', 'skipped'].includes(j.status));
+    el.querySelector('[data-act=stop]').disabled = !all.some((j) => j.status === 'running' || j.status === 'preparing' || j.status === 'pending');
+    el.querySelector('[data-act=retry]').disabled = !all.some((j) => ['failed', 'canceled', 'skipped'].includes(j.status));
     el.querySelector('[data-act=clear-finished]').disabled = !hasFinished;
-    el.querySelector('[data-role=check-all]').checked = jobs.length > 0 && local.checked.size === jobs.length;
 
     rowsEl.innerHTML = jobs.map(rowHtml).join('');
     local.renderedIds = jobs.map((j) => j.id);
+    // 全选 means the rows on screen. Anything else and the header checkbox would tick
+    // itself for rows the user cannot see, and 删除输出 would then act on them.
+    const ids = new Set(local.renderedIds);
+    el.querySelector('[data-role=check-all]').checked = jobs.length > 0
+      && [...local.checked].every((id) => ids.has(id)) && local.checked.size === jobs.length;
     renderToolbar();
     renderDetails();
+  }
+
+  /**
+   * The queue is empty, or the filter is hiding all of it -- two different nothings.
+   * "队列里还没有文件" shown under a 失败 filter would just be untrue.
+   */
+  function paintEmptyState(total) {
+    const title = emptyEl.querySelector('[data-role=empty-title]');
+    const text = emptyEl.querySelector('[data-role=empty-text]');
+    if (total > 0) {
+      title.textContent = '没有符合这个筛选的任务';
+      text.textContent = `队列里有 ${total} 个任务，但没有一个属于「${activeFilter().label}」。换一个状态，或者切回「全部状态」。`;
+      return;
+    }
+    title.textContent = '队列里还没有文件';
+    text.textContent = '点击「添加文件」或「添加文件夹」，也可以把文件直接拖进窗口。支持多选文件与多选目录。';
   }
 
   /** Fast path: patch only the volatile cells of a single row. */
@@ -689,8 +902,11 @@ export function createTasksView(ctx) {
     cells[4].innerHTML = size;
     cells[5].innerHTML = statusChip(job.status, job.frozen);
     cells[6].innerHTML = progressCell(job);
+    if (cells[7]) cells[7].innerHTML = actionsCell(job);
     row.classList.toggle('is-running', job.status === 'running' && !job.frozen);
-    if (job.status !== 'running') { renderToolbar(); return true; }
+    // A finished row is the one whose actions change, so the toolbar has to be told
+    // even though nothing about the queue did.
+    if (job.status !== 'running') renderToolbar();
     return true;
   }
 
@@ -757,12 +973,14 @@ export function createTasksView(ctx) {
       const cb = tr.querySelector('input[type=checkbox]');
       if (cb) cb.checked = local.checked.has(tr.dataset.id);
     });
-    // Drop ids that no longer exist so the count in the bulk bar cannot drift away
-    // from what the table shows after jobs are removed elsewhere.
-    const alive = new Set(ctx.state.jobs.map((j) => j.id));
+    // "Alive" means rendered, not merely queued: with a filter up, a checked row the
+    // user cannot see would still be counted in the bulk bar and would still be
+    // deleted by 删除输出. Dropping it keeps the count and the table telling the same
+    // story.
+    const alive = new Set(local.renderedIds);
     for (const id of [...local.checked]) if (!alive.has(id)) local.checked.delete(id);
     const all = el.querySelector('[data-role=check-all]');
-    all.checked = ctx.state.jobs.length > 0 && local.checked.size === ctx.state.jobs.length;
+    all.checked = local.renderedIds.length > 0 && local.checked.size === local.renderedIds.length;
     renderBulkbar();
     renderToolbar();
   }
@@ -775,38 +993,160 @@ export function createTasksView(ctx) {
     bulkbarEl.hidden = n === 0;
     if (n === 0) return;
     el.querySelector('[data-role=bulk-label]').textContent = `已选 ${n} 项`;
+    // 删除输出 is only worth offering when at least one checked row has a file behind
+    // it; greyed out it still says the action exists, which is the point of showing it.
+    const deletable = ctx.state.jobs.filter((j) => local.checked.has(j.id) && canDeleteOutput(j)).length;
+    const delBtn = el.querySelector('[data-act=bulk-delete]');
+    delBtn.disabled = deletable === 0;
+    delBtn.title = deletable === 0
+      ? '所选任务没有可删除的输出文件'
+      : `删除 ${deletable} 个输出文件（任务保留在列表里）`;
   }
 
   /* ----------------------------------------------------------------- logs */
 
-  function appendLog(jobId, lines) {
-    const selected = ctx.state.selectedJobId;
-    if (local.tab !== 'log' || (selected && selected !== jobId) || local.collapsed) {
-      // still keep the panel hint fresh
-      return;
-    }
-    const frag = lines.map((line) => {
-      const cls = /\[error\]|Error|error:|failed/i.test(line) ? 'l-err'
-        : /\[warn\]|Warning|deprecated/i.test(line) ? 'l-warn'
-          : line.startsWith('$') ? 'l-cmd' : /^\[(done|policy|filter|retry|cancel)\]/i.test(line) ? 'l-info' : '';
-      return `<span class="${cls}">${esc(line)}</span>`;
-    }).join('\n');
-    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
-    logEl.insertAdjacentHTML('beforeend', `\n${frag}`);
-    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
-    const job = currentJob();
-    if (job) el.querySelector('[data-role=panel-hint]').textContent = `${job.inputName} · ${job.logLineCount || 0} 行`;
+  /**
+   * Colour class for one raw ffmpeg line.
+   *
+   * One copy, shared by the append path and the reload path. The two used to carry
+   * their own regex chains, and they had already drifted: the same line could come
+   * out red as it streamed past and grey again after a reload.
+   */
+  function logLineCls(line) {
+    return /\[error\]|error:|failed|invalid|no such file/i.test(line) ? 'l-err'
+      : /\[warn\]|warning|deprecated|not supported/i.test(line) ? 'l-warn'
+        : line.startsWith('$') ? 'l-cmd'
+          : /^\[(done|policy|filter|retry|cancel)\]/i.test(line) ? 'l-info' : '';
   }
 
-  async function loadLog(jobId) {
-    const lines = await ctx.api.jobLogs(jobId);
-    logEl.innerHTML = (lines || []).map((line) => {
-      const cls = /\[error\]|failed|Invalid/i.test(line) ? 'l-err'
-        : /\[warn\]|Warning|deprecated/i.test(line) ? 'l-warn'
-          : line.startsWith('$') ? 'l-cmd' : /^\[(done|policy|filter|retry|cancel)\]/i.test(line) ? 'l-info' : '';
-      return `<span class="${cls}">${esc(line)}</span>`;
-    }).join('\n');
+  function logLineHtml(line) {
+    return `<span class="${logLineCls(line)}">${esc(line)}</span>`;
+  }
+
+  /**
+   * Lines that arrived for the job on screen while another tab was showing.
+   *
+   * The log can only be painted while its own tab is up, so without somewhere to
+   * put them these were simply dropped: spend a minute on 处理详情 and the tail of
+   * the run was gone for good, which reads as "the encoder stopped".
+   */
+  let heldLog = [];
+
+  /**
+   * Should the next batch drag the panel down with it?
+   *
+   * Asked of the scrollbar itself, not of a remembered flag: a scroll event is
+   * delivered on the next rendering step, so a reader who scrolled up a moment ago is
+   * already out of position even though the event has not landed yet. Following a
+   * stale flag there is exactly what used to yank the panel back to the end while
+   * somebody was reading twenty lines up.
+   *
+   * Measured before the new lines go in. Afterwards every append would look like a
+   * reader who had scrolled away, because the content just grew past the scrollbar.
+   */
+  function logAtBottom() {
+    return logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 12;
+  }
+
+  /**
+   * Whether the panel chases the newest line.
+   *
+   * This is the reader's expressed intent, and only a scroll event changes it. It is
+   * kept as state -- rather than read off the scrollbar -- because the panel has to
+   * survive being hidden: a view that is `display:none` has no box, so "is it at the
+   * end?" has no answer while the reader is on another page, and the intent is all
+   * that is left to come back to.
+   */
+  logEl.addEventListener('scroll', () => {
+    local.followLog = logAtBottom();
+  });
+
+  /** Jump to the newest line. */
+  function scrollLogToEnd() {
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function paintPanelHint() {
+    if (local.collapsed) return;
+    el.querySelector('[data-role=panel-hint]').textContent = hintForTab();
+  }
+
+  /**
+   * Append freshly streamed lines to the panel.
+   *
+   * Only the job the panel is showing is written; lines for another job are not
+   * this log. While the log tab is elsewhere the lines are held rather than
+   * dropped, and the panel chases the newest line only if the reader has not
+   * scrolled away from it.
+   *
+   * @param {string} jobId
+   * @param {string[]} lines
+   */
+  function appendLog(jobId, lines) {
+    if (!lines.length) return;
+    const selected = ctx.state.selectedJobId;
+    if (selected && selected !== jobId) return;
+    if (local.tab !== 'log' || local.collapsed) {
+      heldLog.push(...lines);
+      return;
+    }
+    const follow = logAtBottom();
+    logEl.insertAdjacentHTML('beforeend', `\n${lines.map(logLineHtml).join('\n')}`);
+    if (follow) scrollLogToEnd();
+    paintPanelHint();
+  }
+
+  /**
+   * Paint whatever was held while another tab was up, then chase the newest line.
+   *
+   * Also the way back from a page switch: a hidden view has no box to scroll, so a
+   * jump to the end taken then silently does nothing and the panel comes back
+   * parked on the top of a log the reader never touched.
+   */
+  function showHeldLog() {
+    if (local.tab !== 'log' || local.collapsed) return;
+    if (heldLog.length) {
+      logEl.insertAdjacentHTML('beforeend', `\n${heldLog.map(logLineHtml).join('\n')}`);
+      heldLog = [];
+    }
+    // The intent, not the position: while the page was hidden the element had no box
+    // to measure, so the reader's own choice is the only thing left to restore.
+    if (local.followLog) scrollLogToEnd();
+    paintPanelHint();
+  }
+
+  /**
+   * Replace the panel with one job's whole log.
+   *
+   * The reply is tagged with a ticket: clicking two rows in quick succession let
+   * the slower reply land last, so the panel showed the file you had just clicked
+   * away from.
+   */
+  let logTicket = 0;
+
+  async function loadLog(jobId) {
+    const ticket = ++logTicket;
+    const lines = await ctx.api.jobLogs(jobId);
+    if (ticket !== logTicket) return; // a newer selection already won
+    heldLog = [];
+    local.followLog = true; // opening a log means "show me the newest line"
+    logEl.innerHTML = (lines || []).map(logLineHtml).join('\n');
+    scrollLogToEnd();
+    paintPanelHint();
+  }
+
+  /**
+   * Forget the job on screen.
+   *
+   * A removed row has to take its log with it: the panel would otherwise keep
+   * showing the output of a file that is no longer in the queue, with a header
+   * naming a row that is not there any more.
+   */
+  function clearLog() {
+    logTicket++; // a reply still in flight must not repaint what was just cleared
+    heldLog = [];
+    logEl.innerHTML = '';
+    paintPanelHint();
   }
 
   /* ---------------------------------------------------------------- command */
@@ -850,14 +1190,19 @@ export function createTasksView(ctx) {
 
   return {
     el,
-    mount() {
+    async mount() {
       syncTemplateOptions();
       renderJobs();
       // Again now that the page has a box: at construction time el is detached
       // and panelAuto() had to fall back to the window height, which is a
       // titlebar taller than the page actually is.
       applyPanel();
-      if (ctx.state.selectedJobId) loadLog(ctx.state.selectedJobId);
+      if (local.tab !== 'log' || !ctx.state.selectedJobId) return;
+      // The page was off screen until now, so everything appended in the meantime
+      // went into a box with no height and the scroll jump was a no-op. Reload a
+      // log that was never painted, otherwise put the scrollbar back at the end.
+      if (!logEl.textContent.trim()) await loadLog(ctx.state.selectedJobId);
+      else showHeldLog();
     },
     onTemplatesChanged() { syncTemplateOptions(); },
     onJobsChanged() {
@@ -865,18 +1210,20 @@ export function createTasksView(ctx) {
       if (local.tab === 'log' && ctx.state.selectedJobId && !logEl.textContent.trim()) loadLog(ctx.state.selectedJobId);
     },
     onJobUpdate(job) {
-      const existed = local.renderedIds.includes(job.id);
-      if (!existed) { renderJobs(); return; }
+      const visible = local.renderedIds.includes(job.id);
+      const wanted = matchesFilter(job);
+      // A status change can move a row in or out of the current filter, and only a
+      // repaint can express that. Everything else is patched in place.
+      if (visible !== wanted) { renderJobs(); return; }
+      if (!visible) return; // filtered out, and still filtered out
       if (!patchJob(job)) renderJobs();
     },
     onStats() { renderToolbar(); },
     onLog(batch) { appendLog(batch.jobId, batch.lines || []); },
-    onSelectJob(id) {
+    async onSelectJob(id) {
       ctx.state.selectedJobId = id;
       paintSelection();
-      if (local.tab === 'log') loadLog(id);
-      else if (local.tab === 'command') refreshCommand();
-      else renderDetails();
+      await reflectSelection();
     },
     destroy() {},
   };

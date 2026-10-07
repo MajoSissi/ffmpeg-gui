@@ -29,6 +29,7 @@ var (
 	procGetWindowThreadProcId = user32.NewProc("GetWindowThreadProcessId")
 	procSetWindowLongPtrW     = user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW       = user32.NewProc("CallWindowProcW")
+	procPostMessageW          = user32.NewProc("PostMessageW")
 	procGetCurrentProcessId   = kernel32.NewProc("GetCurrentProcessId")
 )
 
@@ -36,14 +37,20 @@ const (
 	msgSystray      = 0x0401 // WM_USER+1: the NOTIFYICONDATA callback message
 	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
+	wmRButtonUp     = 0x0205
+	wmNull          = 0x0000
 
 	// GWLP_WNDPROC is -4. ^uintptr(3) is how -4 looks without a conversion error.
 	gwlpWndProc = ^uintptr(3)
 )
 
 var (
-	trayActivate func()         // set before the hook is installed; read-only after
+	// trayActivate is the callback the left-click hook runs. An atomic pointer
+	// rather than a plain variable because the message-loop thread reads it
+	// while onReady writes it, and because uninstallLeftClick has to clear it.
+	trayActivate atomic.Pointer[func()]
 	trayPrevProc atomic.Uintptr // the procedure we replaced, for forwarding
+	trayHookWnd  atomic.Uintptr // the window the hook is installed on
 	trayWndProc  = syscall.NewCallback(trayWindowProc)
 	trayEnumProc = syscall.NewCallback(trayEnumWindow)
 
@@ -61,7 +68,8 @@ func init() {
 // trayWindowProc is the subclass procedure. Windows calls it on the tray's own
 // message-loop thread, so everything here must be lock-free and fast.
 func trayWindowProc(hWnd, msg, wParam, lParam uintptr) uintptr {
-	if msg == msgSystray && (lParam == wmLButtonUp || lParam == wmLButtonDblClk) {
+	if msg == msgSystray && hWnd == trayHookWnd.Load() &&
+		(lParam == wmLButtonUp || lParam == wmLButtonDblClk) {
 		// A double click also produces a plain release first; showing the window
 		// twice is harmless, so both are handled the same way.
 		//
@@ -69,11 +77,14 @@ func trayWindowProc(hWnd, msg, wParam, lParam uintptr) uintptr {
 		// round-trips to the main window's message loop. Doing that inline would
 		// stall the tray's own message loop for as long as it takes, so it is
 		// handed to a goroutine — this procedure stays non-blocking.
-		if fn := trayActivate; fn != nil {
-			go fn()
+		if p := trayActivate.Load(); p != nil {
+			if fn := *p; fn != nil {
+				go fn()
+			}
 		}
 		return 0
 	}
+
 	prev := trayPrevProc.Load()
 	if prev == 0 {
 		// Only reachable in the instant between installing the hook and recording
@@ -81,6 +92,18 @@ func trayWindowProc(hWnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 	}
 	r, _, _ := procCallWindowProcW.Call(prev, hWnd, msg, wParam, lParam)
+
+	// Forwarding a right-button release ran the library's menu path, which ends
+	// in TrackPopupMenu and returns only once the menu is dismissed. TrackPopupMenu
+	// leaves the shell mid-transaction unless a benign message is posted back to
+	// the owner window afterwards -- without it, the *next* right click shows a
+	// menu that vanishes the moment it appears, which reads as "right click
+	// sometimes does nothing at all". Documented for notification icons in
+	// MSDN's TrackPopupMenu remarks (originally KB135788), and fyne.io/systray
+	// does the SetForegroundWindow half but never this one.
+	if msg == msgSystray && lParam == wmRButtonUp {
+		procPostMessageW.Call(hWnd, wmNull, 0, 0)
+	}
 	return r
 }
 
@@ -145,21 +168,45 @@ func (c *Controller) installLeftClick() {
 	if trayPrevProc.Load() != 0 || len(trayClass) == 0 {
 		return // already subclassed, or the class name could not be encoded
 	}
-	self, _, _ := procGetCurrentProcessId.Call()
+	fn := c.cbs.OnShow
+	if fn == nil {
+		return
+	}
+	// Set the callback before installing: a message could arrive the instant the
+	// swap takes effect.
+	trayActivate.Store(&fn)
 
+	self, _, _ := procGetCurrentProcessId.Call()
 	for i := 0; i < 20; i++ {
 		scanPID, scanFoundWnd = self, 0
 		procEnumWindows.Call(trayEnumProc, 0)
 		if h := scanFoundWnd; h != 0 {
-			// Set the callback before installing: a message could arrive the
-			// instant the swap takes effect.
-			trayActivate = c.cbs.OnShow
 			prev, _, _ := procSetWindowLongPtrW.Call(h, gwlpWndProc, trayWndProc)
 			if prev != 0 {
+				trayHookWnd.Store(h)
 				trayPrevProc.Store(prev)
 			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	// No window turned up. Drop the callback rather than leave one pointing at a
+	// controller that may be gone by the time a click arrives.
+	trayActivate.Store(nil)
+}
+
+// uninstallLeftClick hands the tray window back to the library's procedure and
+// clears the hook state so a later Start can install it again.
+//
+// It runs from Stop, which is what 设置 → 托盘 off/on does. Without it, the next
+// Start found trayPrevProc already set, skipped the (brand new) tray window, and
+// clicking the icon quietly stopped opening the window -- the hook was still
+// pointing at a window that no longer existed.
+func (c *Controller) uninstallLeftClick() {
+	trayActivate.Store(nil)
+	prev := trayPrevProc.Swap(0)
+	if h := trayHookWnd.Swap(0); h != 0 && prev != 0 {
+		// Fails harmlessly if the window is already destroyed.
+		procSetWindowLongPtrW.Call(h, gwlpWndProc, prev)
 	}
 }

@@ -99,7 +99,7 @@ export function createSettingsView(ctx) {
           ${field('输出参数', `<input class="input mono" name="globalOutArgs" value="${esc(s.globalOutArgs || '')}" placeholder="-threads 0">`, '放在输出文件之前')}
         </div>
         <div style="margin-top:10px">
-          ${switchRowInline('启用硬件解码', '自动尝试使用 GPU 解码（-hwaccel auto），可显著降低 CPU 占用', 'hardwareDecode', s.hardwareDecode)}
+          ${switchRowInline('启用硬件解码', '自动尝试 GPU 解码（-hwaccel auto）', 'hardwareDecode', s.hardwareDecode)}
         </div>
       </div>
       <div class="section">
@@ -107,7 +107,7 @@ export function createSettingsView(ctx) {
           <span class="hint" data-role="enc-hint">${enc ? encSummary() : ''}</span>
           <button class="btn btn--text btn--sm" data-act="encoders">${icon('search', 'sm')}重新检测</button></div>
         <div class="tag-list" data-role="encoders">${enc ? encodersHtml() : '<span class="hint">正在检测…</span>'}</div>
-        <div class="hint" style="margin-top:8px">灰掉的编码器在当前 ffmpeg 构建中不存在，模板里选中后会在预览时给出警告。</div>
+        <div class="hint" style="margin-top:8px">灰掉的是当前 ffmpeg 构建里不存在的编码器。</div>
       </div>`;
     }
 
@@ -115,11 +115,11 @@ export function createSettingsView(ctx) {
       html = `
       <div class="section">
         <div class="section__head">${icon('power', 'sm')}<h3>电源与后台</h3></div>
-        ${switchRowInline('防止系统睡眠', '处理期间阻止系统休眠与屏幕关闭，队列空闲后自动恢复', 'preventSleep', s.preventSleep)}
-        ${switchRowInline('启用系统托盘', '在任务栏通知区域显示图标，左键单击即呼出窗口', 'enableTray', s.enableTray)}
-        ${switchRowInline('关闭窗口时最小化到托盘', '点关闭按钮不退出程序，继续在后台处理', 'closeToTray', s.closeToTray)}
-        ${switchRowInline('启动后直接最小化到托盘', '打开程序时窗口完全不出现，只在后台运行（需要启用系统托盘）', 'startMinimized', s.startMinimized)}
-        ${switchRowInline('退出前二次确认', '有任务正在处理时提醒一次，避免误关', 'confirmExit', s.confirmExit)}
+        ${switchRowInline('防止系统睡眠', '处理期间阻止休眠与熄屏', 'preventSleep', s.preventSleep)}
+        ${switchRowInline('启用系统托盘', '', 'enableTray', s.enableTray)}
+        ${switchRowInline('关闭窗口时最小化到托盘', '', 'closeToTray', s.closeToTray)}
+        ${switchRowInline('启动后直接最小化到托盘', '需要先启用系统托盘', 'startMinimized', s.startMinimized)}
+        ${switchRowInline('退出前二次确认', '有任务在处理时提醒一次', 'confirmExit', s.confirmExit)}
       </div>
       <div class="section">
         <div class="section__head">${icon('info', 'sm')}<h3>运行环境</h3></div>
@@ -140,13 +140,13 @@ export function createSettingsView(ctx) {
         <div class="section__head">${icon('terminal', 'sm')}<h3>日志</h3></div>
         <div class="grid grid--3">
           ${field('界面保留日志行数', `<input class="input" type="number" min="100" max="20000" name="keepLogLines" value="${s.keepLogLines ?? 2000}">`, '仅影响界面上显示的最新日志')}
-          ${field('日志体积上限', `<input class="input" type="number" min="1" max="4096" name="logMaxSizeMB" value="${s.logMaxSizeMB ?? 50}">`, '单位 MB，超出后自动删除最旧的日志')}
-          ${field('日志保留天数', `<input class="input" type="number" min="1" max="3650" name="logKeepDays" value="${s.logKeepDays ?? 7}">`, '超过该天数的日志文件会被删除')}
+          ${field('日志体积上限', `<input class="input" type="number" min="1" max="4096" name="logMaxSizeMB" value="${s.logMaxSizeMB ?? 50}">`, '单位 MB，超出后删除最旧的')}
+          ${field('日志保留天数', `<input class="input" type="number" min="1" max="3650" name="logKeepDays" value="${s.logKeepDays ?? 7}">`, '')}
         </div>
         <div style="margin-top:12px">
-          ${switchRowInline('把每个任务的日志写入文件', '在数据目录的 logs 子目录中按任务保存完整输出', 'saveRunLog', s.saveRunLog)}
+          ${switchRowInline('把每个任务的日志写入文件', '按任务保存到数据目录的 logs/', 'saveRunLog', s.saveRunLog)}
         </div>
-        <div class="hint" style="margin-top:8px">启动时以及每次任务结束后都会按上面两项限制清理日志目录，因此长期使用也不会无限占用磁盘。</div>
+        <div class="hint" style="margin-top:8px">日志目录在启动时和每次任务结束后按上面两项清理。</div>
       </div>
       <div class="section">
         <div class="section__head">${icon('database', 'sm')}<h3>数据文件</h3><div class="spacer"></div>
@@ -204,7 +204,7 @@ export function createSettingsView(ctx) {
 
   function switchRowInline(title, hint, name, checked) {
     return `<div class="switch-row">
-      <div class="switch-row__text"><b>${esc(title)}</b><span>${esc(hint)}</span></div>
+      <div class="switch-row__text"><b>${esc(title)}</b>${hint ? `<span>${esc(hint)}</span>` : ''}</div>
       <label class="switch"><input type="checkbox" name="${esc(name)}"${checked ? ' checked' : ''}></label>
     </div>`;
   }

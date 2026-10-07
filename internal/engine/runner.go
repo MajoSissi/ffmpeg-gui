@@ -174,17 +174,31 @@ type Runner struct {
 
 	probing     bool
 	probeCancel context.CancelFunc
+
+	// processedThisRun is the 「已处理过的文件」 record: "this source has already
+	// been through this template, successfully, since the app started".
+	//
+	// It lives in memory and nowhere else, on purpose. A record on disk outlives
+	// the reason for it -- a folder that was re-organised, a result that was
+	// moved by hand -- and then it silently skips files the user did ask to
+	// process. Keeping it in the process means the promise is exactly one a user
+	// can verify: same session, already done, skipped; new session, everything
+	// runs again. Nothing is written next to anyone's media files.
+	//
+	// Guarded by mu, keyed by processedKey.
+	processedThisRun map[string]bool
 }
 
 // NewRunner creates an idle runner.
 func NewRunner() *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Runner{
-		index:     map[string]*Job{},
-		keepAwake: sysx.NewKeepAwake(),
-		ctx:       ctx,
-		cancelAll: cancel,
-		slots:     newThrottle(),
+		index:            map[string]*Job{},
+		processedThisRun: map[string]bool{},
+		keepAwake:        sysx.NewKeepAwake(),
+		ctx:              ctx,
+		cancelAll:        cancel,
+		slots:            newThrottle(),
 	}
 	r.cond = sync.NewCond(&r.mu)
 	return r
@@ -879,7 +893,6 @@ func (r *Runner) Stats() Stats {
 
 func (r *Runner) statsLocked() Stats {
 	s := Stats{Total: len(r.jobs), Paused: r.paused, Started: r.armed, Workers: r.workers}
-	done := 0
 	for _, j := range r.jobs {
 		switch j.Status {
 		case StatusPending:
@@ -890,26 +903,20 @@ func (r *Runner) statsLocked() Stats {
 			s.Running++
 		case StatusDone:
 			s.Done++
-			done++
 		case StatusWarning:
 			s.Warning++
-			done++
 		case StatusFailed:
 			s.Failed++
-			done++
 		case StatusCanceled:
 			s.Canceled++
-			done++
 		case StatusSkipped:
 			s.Skipped++
-			done++
 		case StatusFiltered:
 			s.Filtered++
-			done++
 		}
 	}
 	if s.Total > 0 {
-		s.Progress = float64(done) / float64(s.Total)
+		s.Progress = float64(s.Finished()) / float64(s.Total)
 	}
 	return s
 }
@@ -1172,9 +1179,9 @@ func (r *Runner) runJob(job *Job) {
 		fail("%v", err)
 		return
 	}
-	// 「已处理过的源文件」: the output path is already taken, so this file has been
-	// through this template before. Processing it again would only redo the same
-	// work, so the section decides what happens to the SOURCE instead.
+	// 「已处理过的文件」: a finished run of this template already produced this exact
+	// output, so processing it again would only redo the same work. The section
+	// decides what happens to the SOURCE instead.
 	if stop := r.handleProcessed(job, s, eff, out); stop {
 		return
 	}
@@ -1210,14 +1217,6 @@ func (r *Runner) runJob(job *Job) {
 		r.log(job, s, "[warn] "+w)
 	}
 
-	// From here the output file exists in some form, so the sidecar goes down
-	// before ffmpeg starts. Anything that stops the run before step 6 verifies
-	// the result leaves a marker behind, which is what tells the next run that
-	// the file sitting there is a corpse rather than a result. It is cleared
-	// explicitly on success and deliberately NOT deferred: the failure paths are
-	// the ones that must keep it.
-	markPartial(out)
-
 	// --- 5. run (with retries) ---
 	attempts := perf.RetryCount + 1
 	var runErr error
@@ -1247,7 +1246,6 @@ func (r *Runner) runJob(job *Job) {
 	if runErr != nil {
 		if perf.DeleteOnFail {
 			_ = os.Remove(out)
-			clearPartial(out)
 		}
 		fail("%v", runErr)
 		r.handleProblemFile(job, s, eff, StatusFailed)
@@ -1259,16 +1257,22 @@ func (r *Runner) runJob(job *Job) {
 	if statErr != nil || st.Size() == 0 {
 		if perf.DeleteOnFail {
 			_ = os.Remove(out)
-			clearPartial(out)
 		}
 		fail("ffmpeg 已退出但输出文件缺失或为空")
 		return
 	}
-	// The file is real from here on, so the "an encode was writing this" marker has
-	// done its job. If the app dies in the next few lines the worst case is a
-	// finished file being re-encoded next time, which is recoverable; the opposite
-	// mistake -- clearing too early -- would leave a truncated file looking done.
-	clearPartial(out)
+
+	// 「已处理过的文件」: a verified result is on disk, so this is the moment the
+	// source counts as processed. Both halves happen here, and before the status
+	// is written, so that a source that could not be filed away lands in Warnings
+	// instead of being bolted onto a row that already said 已完成.
+	//
+	// The record is only kept when the section is on. It is what the section
+	// reads, and a run that never looks at it does not need to fill it in.
+	if eff.Existing != nil {
+		r.noteProcessed(job.Input, job.TemplateID)
+		r.fileProcessedSource(job, s, eff)
+	}
 
 	outCtx, outCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	outInfo, outErr := media.ProbeFile(outCtx, bins.FFprobe, out)
@@ -1316,23 +1320,99 @@ func (r *Runner) finishCanceled(job *Job, s store.Settings, deleteOnFail bool) {
 	job.unlock()
 	if deleteOnFail && out != "" {
 		_ = os.Remove(out)
-		clearPartial(out)
 	}
 	r.log(job, s, "[cancel] 任务已取消")
 	r.emitJob(job)
 	r.record(job, s, StatusCanceled, "用户取消")
 }
 
-// handleProcessed applies the 「已处理过的源文件」policy. It runs when the output
-// path is already taken: that only happens when this same template produced a
-// result for this source file before, so the source has been through the queue
-// once already and processing it again would just redo the same work.
+// processedKey identifies "this file, under this template" for the in-session
+// record. The path is lowercased because that is exactly how the queue decides
+// whether two paths are the same file (see AddInputs), so whatever the queue
+// treats as one file also counts as one record here.
+func processedKey(input, tplID string) string {
+	return strings.ToLower(input) + "\x00" + tplID
+}
+
+// alreadyProcessed reports whether this file has already been encoded by this
+// template, successfully, during this run of the app.
 //
-// The policy therefore acts on the SOURCE file, not on the output: 留在原处 is the
-// plain "leave it alone" case, and 移动 / 复制 put the source somewhere else so the
+// Nothing on disk is consulted and nothing is written, so there is no way for a
+// stray file next to a user's media to make this answer wrong. The cost is that
+// the answer does not survive a restart -- which is the behaviour that was asked
+// for: process a folder today, open the app tomorrow, and every file is encoded
+// again rather than silently skipped.
+func (r *Runner) alreadyProcessed(input, tplID string) bool {
+	if input == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.processedThisRun[processedKey(input, tplID)]
+}
+
+// noteProcessed records a verified run. Only called after the output file has
+// been stat'ed non-empty, so a failure, a cancel or a truncated result never
+// gets to claim the file has been handled.
+func (r *Runner) noteProcessed(input, tplID string) {
+	if input == "" {
+		return
+	}
+	r.mu.Lock()
+	r.processedThisRun[processedKey(input, tplID)] = true
+	r.mu.Unlock()
+}
+
+// dropProcessed forgets a record.
+//
+// Two things call it. Deleting an output forgets that file: the record says "a
+// result exists", and it no longer does, so honouring it would leave the user
+// with neither the old file nor a new one. Saving a template forgets everything
+// that template did: the record is only ever true of the settings it was made
+// with, and re-running a folder after changing the encoder has to encode, not
+// report 已跳过.
+func (r *Runner) dropProcessed(input, tplID string) {
+	if input == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.processedThisRun, processedKey(input, tplID))
+	r.mu.Unlock()
+}
+
+// ForgetTemplate drops every record made with one template.
+func (r *Runner) ForgetTemplate(tplID string) {
+	r.mu.Lock()
+	for k := range r.processedThisRun {
+		if strings.HasSuffix(k, "\x00"+tplID) {
+			delete(r.processedThisRun, k)
+		}
+	}
+	r.mu.Unlock()
+}
+
+// ForgetAllProcessed drops every record. Used when the global template changes,
+// because it feeds the defaults of every other template.
+func (r *Runner) ForgetAllProcessed() {
+	r.mu.Lock()
+	r.processedThisRun = map[string]bool{}
+	r.mu.Unlock()
+}
+
+// handleProcessed applies the 「已处理过的文件」policy.
+//
+// The trigger is this run's own bookkeeping: the file went through this template
+// already and came out the other side with a verified output. Nothing about the
+// file sitting at the output path is consulted, because "there is a file there"
+// says nothing about who produced it -- it fired for anything the user happened
+// to have at that path, which is how the section ended up skipping files that
+// had never been near this app.
+//
+// The policy acts on the SOURCE file, not on the output: 留在原处 is the plain
+// "leave it alone" case, and 移动 / 复制 put the source somewhere else so the
 // source tree stops feeding the same file back in. Either way this job is done --
-// the point is to not run ffmpeg again, so unlike the old rename/overwrite rules
-// there is no path here that continues to encoding.
+// the point is to not run ffmpeg again, so there is no path here that continues
+// to encoding.
 //
 // It reports whether the job is finished (skipped or failed), in which case the
 // caller must return without running ffmpeg.
@@ -1341,52 +1421,27 @@ func (r *Runner) handleProcessed(job *Job, s store.Settings, tpl store.Template,
 	if ex == nil {
 		return false
 	}
-	// "The file is there" means a real previous result. Two things are not:
-	// a zero-byte leftover (an interrupted run that never wrote anything) and a
-	// file an interrupted run was still writing (large, but truncated). The second
-	// is exactly what pausing makes easy to produce -- freeze a long encode, quit
-	// the app, and the next run would otherwise skip the file as already done.
-	if !existsNonEmpty(out) {
-		return false
-	}
-	if isPartial(out) {
-		clearPartial(out)
+	if !r.alreadyProcessed(job.Input, job.TemplateID) {
 		return false
 	}
 
 	src := job.Input
-	if action := ex.Action; action == store.ActionMove || action == store.ActionCopy {
-		if !ex.Dest.Usable() {
-			return r.stopJob(job, s, StatusFailed, "「已处理过的源文件」选择了移动或复制，但目标目录不可用")
-		}
-		dest, err := Relocate(MoveRequest{
-			Src:      src,
-			SrcRoot:  job.SourceRoot,
-			Dest:     ex.Dest,
-			Fallback: store.DestRule{Mode: store.OutputSibling, Suffix: store.DefaultOutputSuffix},
-			// The source file was never re-encoded on this pass, so {ext} is its
-			// own extension -- the same rule the problem-file policies use.
-			Pattern:   ex.Pattern,
-			Overwrite: ex.Overwrite,
-			Copy:      action == store.ActionCopy,
-			Template:  tpl.Name,
-		})
-		if err != nil {
-			return r.stopJob(job, s, StatusFailed, "按「已处理过的源文件」处理失败: "+err.Error())
-		}
-		verb := "移动"
-		if action == store.ActionCopy {
-			verb = "复制"
-		}
+	dest, verb, err := r.existingRelocate(job, tpl, ex)
+	if err != nil {
+		// The file is recorded as processed but cannot be filed away. Failing is
+		// the honest outcome: silently skipping would look like the rule ran.
+		return r.stopJob(job, s, StatusFailed, "按「已处理过的文件」处理失败: "+err.Error())
+	}
+	if dest != "" {
 		r.log(job, s, "[processed] 源文件已"+verb+"到 "+dest)
 		src = dest
 	}
 
 	// 「留在原处」and the two relocations all end the same way: this file has
 	// already been through the template, so it is not processed a second time.
-	reason := "该文件此前已用此模板处理过，已跳过"
+	reason := "本次运行已用该模板处理过，已跳过"
 	if src != job.Input {
-		reason = "该文件此前已用此模板处理过，源文件已移走，本次跳过"
+		reason = "本次运行已用该模板处理过，源文件已移走，本次跳过"
 	}
 	job.lock()
 	job.Output = out
@@ -1400,6 +1455,78 @@ func (r *Runner) handleProcessed(job *Job, s store.Settings, tpl store.Template,
 	r.emitJob(job)
 	r.record(job, s, StatusSkipped, reason)
 	return true
+}
+
+// existingRelocate moves or copies the SOURCE of a file this template has
+// processed, per the 「已处理过的文件」 section. It returns the destination and the
+// verb for the log line, or an empty destination when the section says to leave
+// the file where it is.
+//
+// Both halves of the policy come through here -- the skip path (the file was
+// processed in an earlier session) and the finish path (it was processed just
+// now) -- so that 「移动到目标目录」 cannot end up meaning two different things.
+func (r *Runner) existingRelocate(job *Job, tpl store.Template, ex *store.ExistingSpec) (dest, verb string, err error) {
+	action := ex.Action
+	if action != store.ActionMove && action != store.ActionCopy {
+		return "", "", nil
+	}
+	if !ex.Dest.Usable() {
+		return "", "", fmt.Errorf("处理方式选了移动或复制，但目标目录不可用")
+	}
+	verb = "移动"
+	if action == store.ActionCopy {
+		verb = "复制"
+	}
+	dest, err = Relocate(MoveRequest{
+		Src:      job.Input,
+		SrcRoot:  job.SourceRoot,
+		Dest:     ex.Dest,
+		Fallback: store.DestRule{Mode: store.OutputSibling, Suffix: store.DefaultOutputSuffix},
+		// The source file was never re-encoded, so {ext} is its own extension --
+		// the same rule the problem-file policies use.
+		Pattern:   ex.Pattern,
+		Overwrite: ex.Overwrite,
+		Copy:      action == store.ActionCopy,
+		Template:  tpl.Name,
+	})
+	if err != nil {
+		return "", verb, err
+	}
+	return dest, verb, nil
+}
+
+// fileProcessedSource applies the 「已处理过的文件」 relocation to the source of a
+// run that has just produced a verified output.
+//
+// This is the half that never used to happen. The action only ran on the skip
+// path, and a skip needs a trigger a first pass cannot have, so setting
+// 「移动到目标目录」 changed nothing at all: the encode ran, the source stayed
+// where it was, and the section looked broken.
+//
+// A failure is reported as a warning rather than swallowing it: the encode did
+// work, so the job is still a success, but the user asked for the source to be
+// filed away and it is not.
+func (r *Runner) fileProcessedSource(job *Job, s store.Settings, tpl store.Template) {
+	ex := tpl.Existing
+	if ex == nil {
+		return
+	}
+	if _, err := os.Stat(job.Input); err != nil {
+		// The source went away during the encode -- nothing to file away, and
+		// nothing worth a warning either.
+		return
+	}
+	dest, verb, err := r.existingRelocate(job, tpl, ex)
+	if err != nil {
+		r.log(job, s, "[processed] 源文件处理失败: "+err.Error())
+		job.lock()
+		job.addWarningLocked("按「已处理过的文件」处理源文件失败: " + err.Error())
+		job.unlock()
+		return
+	}
+	if dest != "" {
+		r.log(job, s, "[processed] 源文件已"+verb+"到 "+dest)
+	}
 }
 
 // stopJob ends a job that cannot run, with the same bookkeeping everywhere: one
