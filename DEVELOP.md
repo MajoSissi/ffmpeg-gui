@@ -47,6 +47,25 @@ gofmt -l . && go vet ./... && go test ./... -count=1
 > 旧版 Wails CLI 内嵌的 x/tools 无法解析新的 Go 标准库，会报
 > `package "sync" without types`。升级 CLI 而不是降 Go。
 
+### 云端构建（`.github/workflows/build.yml`）
+
+同一个流程也能在 GitHub 上跑：Actions 页面选 `手动构建` → `Run workflow`，可选
+`amd64` / `arm64`，勾上「发布为 Release」再填一个还不存在的 tag 就会顺带把 exe 挂到
+Release 上，否则只留一个构建产物。
+
+两条约定：
+
+- **只在 `workflow_dispatch` 上触发**。这是一个本地工具，构建产物比提交次数更值得由人
+  决定什么时候要；想加 push / tag 触发，在 `on:` 下补一段即可。
+- **版本号只有一个出处**：Go 版本读 `go.mod`（`go-version-file`），Wails CLI 版本
+  `go list -m` 读出来再 `go install`。升级 Wails 时不用动工作流 —— 硬写版本号的话，
+  CLI 和模块版本一旦不一致，`wails build` 会直接拒绝。
+
+CI 里**不需要 Node**：`wails.json` 的 `frontend:install` / `frontend:build` 是空的，
+前端是纯静态 ESM，`frontend/dist` 和 `frontend/wailsjs` 都已经入库，`go:embed` 直接
+打包它们。构建前跑的两道闸（`go vet`、`tools/check_frontend.py`）与本地一致；`go test`
+在没装 ffmpeg 的机器上会自己 skip 掉相关用例，所以它不会因为 CI 缺少 ffmpeg 而红。
+
 ## 前端验证不需要 wails build
 
 `frontend/dist/api.js` 在检测不到 Wails 绑定时会**回退到一份 mock 数据**，

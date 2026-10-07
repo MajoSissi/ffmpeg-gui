@@ -1,0 +1,121 @@
+# 手动构建。
+#
+# 只在 Actions 页面点 "Run workflow" 时跑，不挂 push / tag：这是一个本地用的桌面
+# 工具，构建产物比提交次数更值得由人来决定什么时候要。
+#
+# 项目不需要 Node：wails.json 里 frontend:install / frontend:build 都是空的，前端是
+# 纯静态 ESM（frontend/dist 已入库），go:embed 直接打包它。所以这一步只是
+# 「装 Go + 装 Wails CLI + wails build」。
+name: 手动构建
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 目标架构
+        type: choice
+        default: amd64
+        options:
+          - amd64
+          - arm64
+      release:
+        description: 同时发布为 Release
+        type: boolean
+        default: false
+      tag:
+        description: Release 标签，例如 v1.0.0（不发布可留空）
+        type: string
+        default: ""
+
+# 发布 Release 要写仓库内容；不发布时这个权限不会被用到。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Windows ${{ inputs.arch }}
+    runs-on: windows-latest
+    steps:
+      - name: 取出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          # 版本只在 go.mod 里写一次。CI 用的是它声明的最低版本（DEVELOP 里写的
+          # 「Go 1.25+」），本地 mise 装的是更新的版本 —— 所以 CI 站在更保守的一端：
+          # 万一哪里用了更新的标准库，这里会先红。真要抬版本就改 go.mod。
+          go-version-file: go.mod
+          cache: true
+
+      # Wails 会拒绝版本不一致的 CLI 与模块，所以这里从 go.mod 读版本，
+      # 而不是在工作流里硬写 v2.16.0 —— 升级 Wails 时不用改两个地方。
+      - name: 读取 Wails 版本
+        id: wails
+        shell: bash
+        run: |
+          version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Wails $version"
+
+      - name: 安装 Wails CLI
+        shell: bash
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${{ steps.wails.outputs.version }}"
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # 出包前的两道闸，和本地一致（见「出包前必做」）：
+      # go vet 查静态问题，check_frontend.py 真的把每个前端模块按浏览器的方式加载一遍，
+      # 因为 node --check 查不出「引用了不存在的变量」，那类错误出包后是一片纯色。
+      - name: go vet
+        run: go vet ./...
+
+      - name: 前端模块加载检查
+        run: python tools/check_frontend.py
+
+      # 没装 ffmpeg 的机器上相关用例自己 t.Skip，所以这一步不会因为缺少 ffmpeg 而红。
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: 构建
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+        run: wails build -clean -platform "windows/$ARCH"
+
+      - name: 核对产物
+        shell: bash
+        run: |
+          exe=build/bin/FFmpegGUI.exe
+          if [ ! -f "$exe" ]; then
+            echo "::error::wails build 没有产出 $exe"
+            exit 1
+          fi
+          ls -l "$exe"
+          sha256sum "$exe"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: FFmpegGUI-windows-${{ inputs.arch }}
+          path: build/bin/FFmpegGUI.exe
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: ${{ inputs.release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          ARCH: ${{ inputs.arch }}
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "::error::勾了「发布为 Release」就必须填 tag，例如 v1.0.0"
+            exit 1
+          fi
+          # 一条命令写在一行里：换行续行（反斜杠）在 CRLF 的检出上会失效，
+          # 而 Windows runner 的 core.autocrlf 默认就是 true。
+          gh release create "$TAG" --title "$TAG" --generate-notes "build/bin/FFmpegGUI.exe#FFmpegGUI.exe (Windows $ARCH)"
