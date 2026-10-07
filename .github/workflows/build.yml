@@ -6,7 +6,7 @@
 # 项目不需要 Node：wails.json 里 frontend:install / frontend:build 都是空的，前端是
 # 纯静态 ESM（frontend/dist 已入库），go:embed 直接打包它。所以这一步只是
 # 「装 Go + 装 Wails CLI + wails build」。
-name: 手动构建
+name: Build Windows
 
 on:
   workflow_dispatch:
