@@ -30,10 +30,17 @@ type MediaSummary struct {
 
 // Record is one processed (or rejected) file kept in history.json.
 type Record struct {
-	ID           string       `json:"id"`
-	Input        string       `json:"input"`
-	Output       string       `json:"output"`
-	TemplateID   string       `json:"templateId"`
+	ID         string `json:"id"`
+	Input      string `json:"input"`
+	Output     string `json:"output"`
+	TemplateID string `json:"templateId"`
+
+	// SourceMovedTo is where 「已处理过的文件」 filed the source, when that rule is
+	// set to 移动. Input is the path it was processed from, and after a move that
+	// path is empty on disk -- so this is the only thing that can still take the
+	// user to the file.
+	SourceMovedTo string `json:"sourceMovedTo"`
+
 	TemplateName string       `json:"templateName"`
 	Command      string       `json:"command"`
 	Status       string       `json:"status"`

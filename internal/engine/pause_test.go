@@ -229,4 +229,3 @@ func TestAttachSuspendAdoptsMatchingPid(t *testing.T) {
 		t.Error("the handle was not recorded on the job")
 	}
 }
-

@@ -73,15 +73,20 @@ html, body {
 body { user-select: none; }
 input, textarea, select, .selectable { user-select: text; }
 
+/* The bars follow the same palette as everything else: the thumb is the same
+   colour as a regular outline, so it reads as part of the surface rather than as
+   a slab of browser chrome in the corner of a dark page. `color-scheme` above
+   already darkens the form controls WebView2 owns; this covers the scrollbars. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #33373f;
+  background: var(--outline);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: #454a54; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--outline-strong); background-clip: content-box; }
 
 .icon { width: 18px; height: 18px; flex: none; fill: currentColor; }
 .icon.sm { width: 15px; height: 15px; }
@@ -337,6 +342,25 @@ input, textarea, select, .selectable { user-select: text; }
 }
 .switch input:checked { background: var(--primary-container); }
 .switch input:checked::after { transform: translateX(17px); background: var(--primary); }
+
+/* 紧凑版开关：标题和开关并排，几个可以放在一行里（`.switch-strip`）。控件还是
+   上面那个 `.switch`，只是小一号 —— 一屏上两种"打开/关闭"的样子不存在了。
+   尺寸：轨道 30×17、圆点 11、位移 13（3 + 11 + 13 + 3 = 30）。 */
+.switch-inline {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  user-select: none; font-size: 12.5px; color: var(--on-surface-var);
+}
+.switch-inline:hover { color: var(--on-surface); }
+.switch-inline__label { white-space: nowrap; }
+/* 灰着的紧凑开关（模板编辑器的"与全局不同"、过滤面板里依赖条件的那些）。 */
+.switch-inline.is-disabled { opacity: .42; }
+.switch-inline.is-disabled .switch { cursor: not-allowed; }
+.switch-inline .switch { gap: 0; }
+.switch-inline .switch input { width: 30px; height: 17px; border-radius: 9px; }
+.switch-inline .switch input::after { top: 3px; left: 3px; width: 11px; height: 11px; }
+.switch-inline .switch input:checked::after { transform: translateX(13px); }
+/* 一行里并排几个开关。给它们留出换行的余地：标签长短不一，硬排一行会挤。 */
+.switch-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
 .switch__label { font-size: 12.5px; }
 .switch__hint { font-size: 11px; color: var(--on-surface-dim); }
 
@@ -358,6 +382,9 @@ input, textarea, select, .selectable { user-select: text; }
 .chip--muted { background: var(--muted-bg); color: var(--muted); }
 .chip--click { cursor: pointer; }
 .chip--click:hover { filter: brightness(1.15); }
+/* chip 也可以是一颗按钮（工具栏上的筛选入口）—— 把 UA 的按钮皮去掉，其余照 .chip。 */
+button.chip { appearance: none; border: 0; font: inherit; }
+button.chip:disabled { opacity: .42; cursor: not-allowed; filter: none; }
 
 .badge {
   font-size: 10px; font-weight: 700; letter-spacing: .3px;
@@ -381,27 +408,66 @@ input, textarea, select, .selectable { user-select: text; }
 .section__head .hint { font-size: 11px; color: var(--on-surface-dim); }
 .section__head .spacer { flex: 1; }
 
-/* The naming-variable reference. It sits inside the section's grid and spans both
-   columns, so it always sits directly under the pattern field it documents. The
-   token column is fixed-width so the descriptions align regardless of token length. */
-.varlist {
+/* 变量表。一行两个变量，每个都点了就复制 —— 表达式是要打进输入框的东西，让用户
+   照着屏幕手打花括号和大小写，就是在制造拼错的机会。
+   token 列是 auto 宽度，说明跟在后面，所以两列的说明各自对齐。 */
+.vargrid {
   grid-column: 1 / -1;
   margin-top: 4px;
-  display: grid; grid-template-columns: 96px 1fr;
-  gap: 4px 14px; align-items: baseline;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 20px;
   padding: 10px 12px;
   background: var(--surface-2);
   border-radius: var(--radius-s);
   font-size: 11.5px; color: var(--on-surface-var);
 }
-.varlist .mono { color: var(--primary); font-family: var(--mono); font-size: 11.5px; }
-/* Which other sections consume the same variables -- written here so the table does
-   not have to be repeated under each field that takes a pattern. */
-.varlist__foot {
+.vargrid__cell { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; min-width: 0; }
+.vargrid__cell > span { color: var(--on-surface-dim); }
+/* 按用途分组的小标题，横跨两列。分组不是排版偏好：目录表达式和输出文件名称是两个
+   不能混用的 token 集合，分不清该抄哪一组就会把 {name} 写进目录表达式。 */
+.vargrid__group {
   grid-column: 1 / -1;
-  margin-top: 6px;
-  font-size: 11px; color: var(--on-surface-dim); line-height: 1.55;
+  margin-top: 4px;
+  font-size: 11px; font-weight: 600; color: var(--on-surface-dim);
+  letter-spacing: .04em;
 }
+.vargrid__group:first-child { margin-top: 0; }
+
+/* 路径测试。变量说明单独读是有歧义的（{rootDir} 到底是哪个目录？两个框都留空去哪？），
+   代一个真实路径进去看结果比读十行字快。两条路径用等宽字体，因为它们的用途就是被
+   拿去和别处的字符串比。 */
+.pathtest {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-s);
+}
+.pathtest__head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; font-size: 12.5px; }
+.pathtest__head .hint { color: var(--on-surface-dim); font-size: 11.5px; }
+.pathtest__out { margin-top: 8px; display: grid; gap: 3px; }
+.pathtest__line {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px;
+  align-items: baseline; font-size: 11.5px;
+}
+.pathtest__line > span { color: var(--on-surface-dim); }
+.pathtest__line code {
+  font-family: var(--mono); font-size: 11.5px; color: var(--on-surface);
+  overflow-wrap: anywhere;
+}
+.pathtest__line--bad code, .pathtest__line--bad { color: var(--err); }
+.pathtest__note { font-size: 11px; color: var(--on-surface-dim); line-height: 1.8; }
+
+/* 可复制的变量，变量表里每一格一颗。
+   底色常驻（不是只在 hover 时才出现）：一颗只有文字颜色的按钮看不出能点。 */
+.var-chip {
+  appearance: none; border: 1px solid var(--surface-4); background: var(--surface-4);
+  padding: 1px 7px; border-radius: 5px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px; color: var(--primary);
+  white-space: nowrap; transition: background .12s, border-color .12s, color .12s;
+}
+.var-chip:hover { background: var(--surface-3); border-color: var(--outline-strong); }
+.var-chip:active { transform: translateY(1px); }
 
 .grid { display: grid; gap: 10px 12px; }
 .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -431,6 +497,68 @@ input, textarea, select, .selectable { user-select: text; }
 }
 .toolbar__right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .toolbar .select { width: auto; min-width: 168px; max-width: 260px; }
+/* 任务页的工具栏分两行。
+   单行放不下全部动作，而让 flex 自己换行的话，两组按钮的位置会随窗口宽度跳来跳去 ——
+   「开始」有时在这一行末尾、有时被挤到下一行。两行各有自己的左组和右组，位置固定：
+   第一行是"动队列"（加文件、筛状态、重试、清理）+ 三个队列开关，第二行是"进队列的东西
+   按什么处理"（模板、过滤两套规则）+ 计数。左组管的事跟着鼠标从加文件读到开始，右组
+   一直是那三颗。 */
+.toolbar--rows { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 8px; }
+.toolbar__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* 下拉框的行内标注。第二行两个下拉里装的是**数据**（模板名、方案名），而不是像第一行
+   那个状态下拉一样自带解释（"排队中""已完成"念出来就知道它是什么）。两个下拉本身长得
+   一模一样，拉开之前唯一能分辨它们的就是旁边这两个字。
+
+   标注不是一句说明文字，而是控件的**前导段**：和下拉同高、同一个圆角框、共一条边框，
+   像一个输入框里带前缀图标那样连成一体。原来它是 11.5px 的灰字浮在旁边，比按钮小一号
+   又不带任何框，两颗下拉看着像是没有标签的光秃控件；连成一体之后，"这是一组什么 +
+   一颗下拉"是一个东西，不必靠眼睛去猜哪颗下拉管哪件事。 */
+.toolbar__field {
+  display: flex; align-items: stretch;
+  height: var(--ctl-h);
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  transition: border-color .14s ease, background-color .14s ease;
+}
+.toolbar__field:focus-within { border-color: var(--primary); background-color: var(--surface-3); }
+.toolbar__label {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 0 10px;
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  font-size: 12.5px; font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+}
+.toolbar__label .icon { width: 15px; height: 15px; }
+/* 下拉自己不再画边框 —— 框已经由外面那一圈给了，再画一遍就是两层线加两个圆角。 */
+.toolbar__field .select {
+  height: 100%;
+  background-color: transparent;
+  border: 0;
+  border-radius: 0;
+  align-self: stretch;
+}
+.toolbar__field .select:focus { background-color: transparent; }
+
+/* 工具栏上的方案下拉。方案名有两三个字就够了，不必和模板下拉一样宽 —— 那一行已经有
+   四个控件，它再吃掉 260px，「添加文件夹」就会被挤到看不见的地方。 */
+.toolbar .select--profile { min-width: 132px; max-width: 200px; }
+/* 任务页上临时换过一套的样子。默认那套和"这次想用的"那套在界面上长得一样的话，用户
+   会以为换已经生效了 —— 而它只在本次运行里生效，要长久得去「过滤」页按「设为默认」。 */
+/* 「不使用过滤」选中时的样子。灰色而不是主色：这一项说的是"什么都不做"，用强调色
+   说一句"不过滤"会把它读成一条被特意选中的规则。框改成虚线 —— 说错了的代价是收进来
+   一堆本该跳过的文件，得一眼看出这批是没过滤的。
+
+   框是 `.toolbar__field` 画的那一圈（下拉自己不画边框），所以虚线落在**它**身上：
+   下拉自己套一个虚线框会在那一段再添一圈线，而那一段本来就是连着的。 */
+.toolbar__field:has(.select--profile.is-off) { border-style: dashed; }
+.toolbar__field .select--profile.is-off { color: var(--on-surface-dim); }
 
 /* ==========================================================================
    Table
@@ -506,6 +634,25 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   padding: 6px 16px;
   border-bottom: 1px solid var(--outline);
   background: var(--surface-2);
+}
+
+/* Pager bar. A footer under the table rather than a strip in the toolbar: the
+   toolbar already wraps, and 每页条数 belongs next to the page it decides. */
+.pager {
+  flex: none;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--outline);
+  background: var(--surface);
+}
+.pager__size {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--on-surface-dim);
+}
+.pager__size .select { width: auto; min-width: 92px; height: 28px; font-size: 12px; }
+.pager__page {
+  min-width: 84px; text-align: center;
+  font-family: var(--mono); font-size: 11.5px; color: var(--on-surface-var);
 }
 
 
@@ -634,15 +781,15 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
 }
 .follow svg { flex: none; color: var(--primary); }
 
-/* "与全局不同" lives in the section header, next to the title it governs. */
-.inline-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-.inline-toggle input { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
-.inline-toggle span { font-size: 11px; color: var(--on-surface-dim); white-space: nowrap; }
-.inline-toggle:hover span { color: var(--on-surface-var); }
+/* "与全局不同" 用的是 `.switch-inline`（见上）：段头的开关和设置页里的开关
+   是同一种控件。这里曾经有一个原生勾选框的样式。 */
 
 .detail-grid { overflow: auto; padding: 12px 16px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .detail-card { background: var(--surface-2); border: 1px solid var(--outline); border-radius: var(--radius); padding: 12px 14px; }
-.detail-card h4 { margin: 0 0 10px; font-size: 11.5px; color: var(--on-surface-dim); font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.detail-card h4 { margin: 0 0 10px; font-size: 11.5px; color: var(--on-surface-dim); font-weight: 600; letter-spacing: .4px; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+/* 卡片标题行里可以挂一颗按钮（定位）。按钮自己不带大写和字距：那是标题的样子，
+   不是控件的样子。 */
+.detail-card h4 .btn { text-transform: none; letter-spacing: 0; color: var(--on-surface-dim); }
 .kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; font-size: 12px; }
 .kv dt { color: var(--on-surface-dim); }
 .kv dd { margin: 0; color: var(--on-surface); font-family: var(--mono); font-size: 11.5px; word-break: break-all; user-select: text; }
@@ -666,10 +813,16 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   display: flex; flex-direction: column; gap: 8px;
   border-bottom: 1px solid var(--outline);
 }
-/* The three whole-column tools sit left, "new" sits right, on one row. They used to be
-   split across two rows with a "模板" heading, which pushed the search box -- the thing
-   you actually reach for -- to the bottom of the head. */
-.tpl-list__bar { display: flex; align-items: center; gap: 2px; }
+/* 搜索框和那颗「新建」在同一条线上：搜索框吃掉剩下的宽度，按钮贴在它右边。
+   两者之间只留 6px —— 它们是同一行的两个控件，不是两块东西。
+
+   那颗按钮是 `btn--tonal`：一排灰按钮中间孤零零一个「+」，看不出它是干什么的；给它
+   主色实底之后它就成了这一行里唯一的"新增"入口。它不写文字 —— 「新建」两个字在 34px
+   宽的格子里放不下，要占掉搜索框三分之一的长度。圆角跟着输入框走，两个控件并排时上下
+   角对不齐比少一个图标更显眼。 */
+.tpl-list__search { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tpl-list__search .input { flex: 1; min-width: 0; }
+.tpl-list__search .btn { flex: none; border-radius: var(--radius-s); }
 .tpl-list__items { flex: 1; min-height: 0; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 /* A caption used to sit here ("拖动可排序 · 右键更多操作"). Two facts the rows
    already show -- every row has a drag grip, and right-clicking one is how the
@@ -698,6 +851,20 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
    as a column of unexplained icons. */
 .tpl-row { position: relative; display: flex; align-items: stretch; border-radius: 10px; border: 1px solid transparent; }
 .tpl-row:hover { background: var(--surface-2); }
+/* 勾选高亮，和"正在编辑"（`.is-active`）是两件事：Ctrl 点出来的一串里只有最后点的那一行
+   在右边显示着，整串都得看得出是选中的。
+   勾选的标记是左边那根竖条而不是背景色 —— 背景色和 `.is-active` 用的是同一片 surface
+   色阶，而最后点的那一行永远两者都有，靠底色分就永远分不开。竖条是唯一一个"只可能在
+   勾选时出现"的形状。 */
+.tpl-row.is-checked::before {
+  content: '';
+  position: absolute; left: 0; top: 6px; bottom: 6px;
+  width: 3px; border-radius: 2px;
+  background: var(--primary);
+}
+.tpl-row.is-checked:not(.is-active) { background: var(--surface-2); }
+.tpl-row.is-checked:not(.is-active):hover { background: var(--surface-3); }
+.tpl-row.is-checked .tpl-item__name { color: var(--on-surface); }
 .tpl-row.is-active { background: var(--surface-3); border-color: var(--outline-strong); }
 .tpl-row.is-active .tpl-item__name { color: var(--on-surface); }
 .tpl-row.is-dragging { opacity: .4; }
@@ -850,6 +1017,74 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
 .modal__body { flex: 1; min-height: 0; overflow: auto; }
 .modal__foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--outline); background: var(--surface-2); }
 
+/* ==========================================================================
+   过滤方案页 —— views/filters.js
+   ========================================================================== */
+
+/* 版面直接用「模板」页那套骨架（`.split` + `.tpl-list` + `.editor`）：一页里同时要放
+   一张方案表和两段规则，竖着堆成一列会让人以为"这是同一个表单的上下两半"，而它们其实
+   是"选哪一套"和"这套写了什么"两件事。两页做的是同一件事，长得不一样只会让人以为
+   "过滤方案"是另一种东西。
+   整页而不是弹窗：一套规则有十几个字段，塞进任务页的工具栏就只能做成浮层，而浮层没法
+   在"我现在这套到底设了什么"被问起的时候留在屏幕上。 */
+
+/* 组里三段（开关 / 条件 / 结果）的间距。`.section` 本身不是 flex 容器，两段之间只剩行盒
+   留下的那点空隙 —— 而「添加」比开关高一头，会正好贴在开关那一行下面，读成"这一排开关
+   里最右边那颗"。段头自带 `margin-bottom`，这里一起收掉，改由这个 gap 统一给。 */
+.fscan-page .section { display: flex; flex-direction: column; gap: 14px; }
+.fscan-page .section__head { margin-bottom: 0; }
+
+/* 条件 + 「添加」。一条条件就是"匹配方式 + 一个词"，三截用网格对齐：匹配方式那一栏是
+   固定宽度的（都是同一批词，长度差得不多，窄了要折行），值那一栏吃掉剩下的全部宽度，
+   右边固定留一格给删除。
+
+   值那一栏**铺满**是有理由的：条件里唯一长度不定的就是它（一个词还是一串通配符），
+   而 360px 的上限会让右边空出几百像素 —— 一个空着的输入框看起来像"这里还能再拆一栏"，
+   实际那里什么都没有。「添加」是独立的按钮而不是这一行的第四截，它贴在这块的右下角
+   （`flex-end`：新的一条总加在末尾，按钮跟着末尾走，按下去的东西就在眼前）。 */
+.fscan__condsec { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
+.fscan__condsec .fscan__conds { flex: 1; min-width: 0; }
+.fscan__condsec > .btn { flex: none; height: var(--ctl-h); }
+
+/* 「试一个文件夹」：手输也行，右边那颗按钮从资源管理器里挑。 */
+.fscan__test { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fscan__test .input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
+
+.fscan__conds { display: flex; flex-direction: column; gap: 8px; flex: 0 1 auto; min-width: 0; }
+/* 条件是"匹配方式 + 一个词"两截，用网格对齐才看得出是一组；每行右侧固定留给删除。 */
+.fscan__row { display: grid; grid-template-columns: 108px 1fr var(--ctl-h); gap: 8px; align-items: center; }
+.fscan__row .btn--icon { height: var(--ctl-h); }
+/* 通配符的写法多半是从别处粘来的，等宽体让 `ffmpeg__*` 和 `ffmpeg__` 一眼分开。 */
+.fscan__row .input { font-family: var(--mono); font-size: 12px; }
+
+/* 结果区。上面是"收了多少"，下面是自己滚的一份列表：改条件时列表一跳一跳的，就看不
+   出"这一改是多了还是少了"。 */
+.fscan__out {
+  min-height: 120px; display: flex; flex-direction: column; gap: 8px;
+  overflow: auto; transition: opacity .15s ease;
+}
+/* 打字之后、新结果回来之前的那一瞬：内容还是上一份，但已经不是答案了。压暗比清空
+   好读 —— 每个字都闪一次空白，看到的是抖动而不是列表。 */
+.fscan__out.is-stale { opacity: .45; }
+.fscan__head { flex: none; font-size: 12.5px; color: var(--on-surface-var); }
+.fscan__head b { font-weight: 600; color: var(--on-surface); }
+.fscan__head .hint { margin-left: 10px; font-size: 11.5px; color: var(--on-surface-dim); }
+
+.fscan__list { display: flex; flex-direction: column; }
+/* 斑马纹而不是每条一条分隔线：几十行时线比内容还密，而现在这个列表是拿来扫的。 */
+.fscan__item { display: flex; align-items: baseline; gap: 10px; padding: 4px 8px; border-radius: var(--radius-s); }
+.fscan__item:nth-child(odd) { background: var(--surface-2); }
+.fscan__name { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fscan__count { flex: none; font-size: 11px; color: var(--on-surface-dim); }
+.fscan__more, .fscan__empty { padding: 6px 8px; font-size: 11.5px; color: var(--on-surface-dim); }
+
+.fscan__err {
+  flex: none; display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border-radius: var(--radius-s);
+  background: var(--err-bg); color: var(--err); font-size: 12px;
+}
+.fscan__err .icon { flex: none; margin-top: 1px; }
+
 /* Top-right, under the window buttons. The stack grows downwards so the newest
    message is the one closest to the corner the eye returns to. */
 .toasts {
@@ -888,6 +1123,8 @@ table.grid-table tbody tr.is-selected td:first-child { border-top-left-radius: 2
   border-bottom: 1px solid #22262d;
 }
 .switch-row:last-child { border-bottom: 0; }
+.switch-row.is-disabled { opacity: .42; }
+.switch-row.is-disabled .switch { cursor: not-allowed; }
 .switch-row__text { flex: 1; min-width: 0; }
 .switch-row__text b { display: block; font-size: 12.5px; font-weight: 500; color: var(--on-surface); }
 .switch-row__text span { font-size: 11px; color: var(--on-surface-dim); }

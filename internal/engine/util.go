@@ -131,15 +131,12 @@ type Naming struct {
 //     错误 / 警告). Nothing re-wraps them, so they keep their own extension and
 //     {ext} still means something.
 func ExpandPattern(pattern string, n Naming) string {
-	repl := map[string]string{
-		"{name}":     n.Name,
-		"{ext}":      n.Ext,
-		"{template}": sanitize(n.Template),
-		"{dir}":      sanitize(n.Dir),
-		"{index}":    pad3(n.Index),
-		"{idx}":      pad3(n.Index),
-	}
-	return expand(pattern, repl, false)
+	return store.ReplaceTokens(pattern, func(t store.TokenRef) (string, bool) {
+		if t.Name == "ext" {
+			return t.Plain(n.Ext)
+		}
+		return namingToken(t, n)
+	})
 }
 
 // ExpandOutputPattern is ExpandPattern without {ext}. A leftover token from an
@@ -147,56 +144,30 @@ func ExpandPattern(pattern string, n Naming) string {
 // already comes from the container, so "clip.{ext}" would otherwise produce
 // "clip..mp4".
 func ExpandOutputPattern(pattern string, n Naming) string {
-	repl := map[string]string{
-		"{name}":     n.Name,
-		"{template}": sanitize(n.Template),
-		"{dir}":      sanitize(n.Dir),
-		"{index}":    pad3(n.Index),
-		"{idx}":      pad3(n.Index),
-	}
-	return expand(pattern, repl, true)
-}
-
-// expand substitutes the tokens it is given. stripExt removes a {ext} that the
-// replacer left behind, which is how a template written before the token was
-// dropped from 「输出与命名」 ends up as "clip" rather than "clip.{ext}".
-func expand(pattern string, repl map[string]string, stripExt bool) string {
-	out := pattern
-	for k, v := range repl {
-		out = strings.ReplaceAll(out, k, v)
-	}
-	if stripExt {
-		out = strings.ReplaceAll(out, "{ext}", "")
-	}
-	return out
-}
-
-func pad3(v int) string {
-	if v <= 0 {
-		return ""
-	}
-	s := itoa(v)
-	for len(s) < 3 {
-		s = "0" + s
-	}
-	return s
-}
-
-// sanitize removes characters that are illegal in Windows file names.
-func sanitize(s string) string {
-	if s == "" {
-		return ""
-	}
-	bad := `\/:*?"<>|`
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if strings.ContainsRune(bad, r) {
-			out = append(out, '_')
-			continue
+	return store.ReplaceTokens(pattern, func(t store.TokenRef) (string, bool) {
+		if t.Name == "ext" {
+			return t.Plain("")
 		}
-		out = append(out, r)
+		return namingToken(t, n)
+	})
+}
+
+// namingToken is the token set the two naming patterns share. {index} is the same
+// token in both, and so is its width -- store.FormatIndex is what keeps
+// 「输出文件名称」 and the relocation sections' 「源文件新名称」 from disagreeing
+// about how many digits an index has.
+func namingToken(t store.TokenRef, n Naming) (string, bool) {
+	switch t.Name {
+	case "name":
+		return t.Plain(n.Name)
+	case "template":
+		return t.Plain(store.Sanitize(n.Template))
+	case "dir":
+		return t.Plain(store.Sanitize(n.Dir))
+	case "index", "idx":
+		return store.FormatIndex(n.Index, t.Arg, t.HasArg), true
 	}
-	return string(out)
+	return "", false
 }
 
 // ContainerExt normalizes a container name to a file extension.

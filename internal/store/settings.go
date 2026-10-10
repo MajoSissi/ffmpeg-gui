@@ -6,22 +6,8 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Output rules
+// File handling actions
 // ---------------------------------------------------------------------------
-
-// OutputDirMode controls where finished files are written. The same four modes
-// are offered for the main output, for files rejected by the filter rules and
-// for problem files, so all of them behave the same way.
-const (
-	OutputSame    = "same"    // 与源文件同一目录
-	OutputSibling = "sibling" // 同级顶层目录 + 后缀（源目录结构）
-	OutputCustom  = "custom"  // 指定目录（源目录结构不保留）
-	OutputMirror  = "mirror"  // 指定目录（源目录结构）
-)
-
-// DefaultOutputSuffix is appended to the source root directory name in
-// "sibling" mode:  /video/mmd  ->  /video/mmd_out
-const DefaultOutputSuffix = "_out"
 
 // OnError / OnWarning actions.
 const (
@@ -58,6 +44,17 @@ type Settings struct {
 	SaveRunLog   bool `json:"saveRunLog"`   // 是否把运行日志写入磁盘
 	LogMaxSizeMB int  `json:"logMaxSizeMB"` // 单个日志文件的体积上限
 	LogKeepDays  int  `json:"logKeepDays"`  // 日志保留天数，超期自动删除
+
+	// --- 过滤方案 ---
+	// 一套套命名的规则，任务页上挑一套用。它管的是**入队之前**那一道筛子：哪些
+	// 目录收进来、哪些文件进队列。每套里有目录规则和文件规则两组，各自独立
+	// （见 `store.FilterProfile`）。
+	//
+	// 常驻设置：设一次，「添加文件」「添加文件夹」和拖入窗口三条路都自动套用它。
+	FilterProfiles []FilterProfile `json:"filterProfiles"`
+	// ActiveFilter 是**此刻在用**的那套方案的名字。任务页上下拉选哪套就写这里，
+	// 下次打开从它开始 —— 见 `App.SetActiveFilter`。名字指向一套不存在的方案时退回第一套。
+	ActiveFilter string `json:"activeFilter"`
 
 	// --- 界面记忆 ---
 	LastTemplateID string `json:"lastTemplateId"`
@@ -120,6 +117,10 @@ func (s *Settings) Normalize() {
 	if s.LogDir == "" {
 		s.LogDir = filepath.Join(DataDir(), "logs")
 	}
+	s.FilterProfiles = normalizeProfiles(s.FilterProfiles)
+	// 名字指向一套不存在的方案时把它拉回第一套：任务页那个下拉显示的必须是**真的
+	// 会生效**的那一套，否则它和引擎读到的不是同一个东西。
+	s.ActiveFilter = PickProfile(s.ActiveFilter, s.FilterProfiles).Name
 }
 
 func normalizeExts(in []string) []string {
@@ -146,6 +147,9 @@ func LoadSettings() Settings {
 	if ok, err := ReadJSON(SettingsPath(), &s); !ok || err != nil {
 		_ = WriteJSON(SettingsPath(), s)
 	}
+	// 第 45 批之前那套"当前生效的条件"没有名字，得先给它起一个再归一化 ——
+	// 不然 Normalize 会把它当成零套方案，然后补上一套空的把它顶掉。
+	adoptLegacyFilters(&s)
 	s.Normalize()
 	return s
 }

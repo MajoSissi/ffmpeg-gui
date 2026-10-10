@@ -9,28 +9,37 @@ import (
 // Inheritance
 // ---------------------------------------------------------------------------
 
-// A template whose output switch is on but leaves fields blank picks up the global
-// ones field by field -- that is the whole point of "留空即跟随".
-func TestEffectiveInheritsOutputFieldByField(t *testing.T) {
+// Turning the output switch on and leaving a field blank means that field's own
+// plain default, NOT the global value. Two levels of "blank follows the global
+// template" said the same thing twice, and the field-level one was the worse of
+// the two: the switch reads 「与全局不同」 while the field silently kept following.
+func TestEffectiveBlankOutputFieldsStayBlank(t *testing.T) {
 	g := DefaultGlobalTemplate()
-	g.OutMode = OutputMirror
-	g.OutDir = filepath.Join("D:", "Media")
-	g.OutSuffix = "_done"
+	g.OutDirSpec = DirSpec{Mode: OutputCustom, Dir: "D:/Media", KeepTree: true}
 	g.OutPattern = "{name}_x"
 
-	eff := Template{OutputOverride: true}.Effective(g)
-	if eff.OutMode != OutputMirror || eff.OutDir != g.OutDir ||
-		eff.OutSuffix != "_done" || eff.OutPattern != "{name}_x" {
-		t.Fatalf("blank template did not inherit: %+v", eff)
+	// Only the directory is written, so only the directory is taken. The blank
+	// pattern stays blank and ResolveOutput reads that as "{name}".
+	eff := Template{OutDirSpec: DirSpec{Mode: OutputCustom, Dir: "D:/Other"}, OutputOverride: true}.Effective(g)
+	if eff.OutDirSpec.Dir != "D:/Other" || eff.OutDirSpec.KeepTree {
+		t.Errorf("override lost: %+v", eff.OutDirSpec)
+	}
+	if eff.OutPattern != "" {
+		t.Errorf("a blank pattern must not pick up the global one: %q", eff.OutPattern)
 	}
 
-	// One override must not drag the rest along: OutSuffix stays global.
-	eff2 := Template{OutSuffix: "_custom", OutputOverride: true}.Effective(g)
-	if eff2.OutSuffix != "_custom" {
-		t.Errorf("override lost: %q", eff2.OutSuffix)
+	// Everything blank stays blank, including KeepTree: the pair is one decision,
+	// so a blank expression must not drag the global's structure flag along.
+	eff2 := Template{OutputOverride: true, OutPattern: "{name}_y"}.Effective(g)
+	if eff2.OutDirSpec != (DirSpec{}) {
+		t.Errorf("blank directory inherited the global one: %+v", eff2.OutDirSpec)
 	}
-	if eff2.OutMode != OutputMirror || eff2.OutPattern != "{name}_x" {
-		t.Errorf("override leaked into the other fields: %+v", eff2)
+	if eff2.OutPattern != "{name}_y" {
+		t.Errorf("own pattern lost: %q", eff2.OutPattern)
+	}
+	eff3 := Template{OutDirSpec: DirSpec{KeepTree: true}, OutputOverride: true}.Effective(g)
+	if eff3.OutDirSpec.Mode != "" || eff3.OutDirSpec.Dir != "" {
+		t.Errorf("a blank directory must not pick up the global one: %+v", eff3.OutDirSpec)
 	}
 }
 
@@ -39,19 +48,19 @@ func TestEffectiveInheritsOutputFieldByField(t *testing.T) {
 // otherwise saving a template and re-opening it would quietly change the output.
 func TestEffectiveFollowerIgnoresOwnOutputValues(t *testing.T) {
 	g := DefaultGlobalTemplate()
-	g.OutMode = OutputSibling
-	g.OutSuffix = "_out"
+	g.OutDirSpec = DirSpec{Mode: OutputSibling, Suffix: "_out", KeepTree: true}
 	g.OutPattern = "{name}.{ext}"
 
-	// A template carrying a stale sibling rule, but following the global one.
+	// A template carrying a stale rule, but following the global one.
 	follower := Template{
-		OutMode: OutputSame, OutSuffix: "_stale", OutPattern: "{name}_stale",
+		OutDirSpec:     DirSpec{Mode: OutputCustom, Dir: "D:/stale", KeepTree: true},
+		OutPattern:     "{name}_stale",
 		OutputOverride: false,
 	}.Effective(g)
-	if follower.OutMode != OutputSibling {
-		t.Errorf("OutMode should come from the global template, got %q", follower.OutMode)
+	if follower.OutDirSpec != g.OutDirSpec {
+		t.Errorf("the directory should come from the global template, got %+v", follower.OutDirSpec)
 	}
-	if follower.OutSuffix != "_out" || follower.OutPattern != "{name}.{ext}" {
+	if follower.OutPattern != "{name}.{ext}" {
 		t.Errorf("stale values survived a follower: %+v", follower)
 	}
 }
@@ -105,8 +114,8 @@ func TestNormalizeKeepsNilSectionsNil(t *testing.T) {
 	if tpl.Perf != nil || tpl.Filter != nil || tpl.Problems != nil || tpl.Existing != nil {
 		t.Error("Normalize materialised a section that was meant to follow the global one")
 	}
-	if tpl.OutMode != "" {
-		t.Errorf("Normalize filled an output mode: %q", tpl.OutMode)
+	if tpl.OutDirSpec.Mode != "" || tpl.OutPattern != "" {
+		t.Errorf("Normalize filled an output rule: %+v", tpl.OutDirSpec)
 	}
 }
 
@@ -169,7 +178,7 @@ func TestNewFromGlobalIsDeepCopied(t *testing.T) {
 	g.Problems.ErrorAction = ActionMove
 	// The global ships without this section (see
 	// TestDefaultGlobalHasNoExistingSection), so set one up to prove the copy.
-	g.Existing = &ExistingSpec{Action: ActionMove, Dest: DestRule{Mode: OutputCustom, Dir: filepath.Join("D:", "done")}}
+	g.Existing = &ExistingSpec{Action: ActionMove, Dir: DirSpec{Mode: OutputCustom, Dir: filepath.Join("D:", "done")}}
 
 	n := NewFromGlobal(g)
 	if n.Perf == g.Perf || n.Filter == g.Filter || n.Problems == g.Problems ||
@@ -178,14 +187,14 @@ func TestNewFromGlobalIsDeepCopied(t *testing.T) {
 	}
 	n.Perf.Concurrency = 1
 	n.Filter.IncludeExts[0] = "mkv"
-	n.Existing.Dest.Dir = "D:/elsewhere"
+	n.Existing.Dir.Dir = "D:/elsewhere"
 	if g.Perf.Concurrency != 8 || g.Filter.IncludeExts[0] != "mp4" {
 		t.Error("editing the new template reached back into the global one")
 	}
-	if g.Existing.Dest.Dir == "D:/elsewhere" {
+	if g.Existing.Dir.Dir == "D:/elsewhere" {
 		t.Error("editing the new template's existing-file section reached back into the global one")
 	}
-	if n.OutMode != "" || n.OutputOverride {
+	if n.OutDirSpec.Mode != "" || n.OutPattern != "" || n.OutputOverride {
 		// The output section now has its own switch, and a new template starts
 		// switched off. Copying the values in would mean a fresh preset is
 		// overriding rules the moment it is created.
@@ -193,53 +202,8 @@ func TestNewFromGlobalIsDeepCopied(t *testing.T) {
 	}
 	// ...and following must actually resolve to the global values.
 	eff := n.Effective(g)
-	if eff.OutMode != g.OutMode || eff.OutSuffix != g.OutSuffix || eff.OutPattern != g.OutPattern {
+	if eff.OutDirSpec != g.OutDirSpec || eff.OutPattern != g.OutPattern {
 		t.Errorf("following did not resolve to the global output rules: %+v", eff)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DestRule
-// ---------------------------------------------------------------------------
-
-func TestDestRuleInherit(t *testing.T) {
-	fb := DestRule{Mode: OutputMirror, Dir: filepath.Join("D:", "fallback"), Suffix: "_out"}
-	got := DestRule{}.Inherit(fb)
-	if got != fb {
-		t.Errorf("blank rule did not inherit: %+v", got)
-	}
-	partial := DestRule{Suffix: "_x"}.Inherit(fb)
-	if partial.Mode != OutputMirror || partial.Dir != fb.Dir || partial.Suffix != "_x" {
-		t.Errorf("partial inherit wrong: %+v", partial)
-	}
-}
-
-// custom / mirror without a directory cannot be used; same / sibling always can.
-// Silently treating the first two as "next to the source" would write results
-// somewhere the user never asked for.
-func TestDestRuleUsable(t *testing.T) {
-	cases := []struct {
-		rule DestRule
-		want bool
-	}{
-		{DestRule{Mode: OutputSame}, true},
-		{DestRule{Mode: OutputSibling}, true},
-		{DestRule{Mode: OutputCustom, Dir: "D:/x"}, true},
-		{DestRule{Mode: OutputCustom}, false},
-		{DestRule{Mode: OutputMirror, Dir: "D:/x"}, true},
-		{DestRule{Mode: OutputMirror}, false},
-		{DestRule{Mode: ""}, true},
-	}
-	for _, tc := range cases {
-		if got := tc.rule.Usable(); got != tc.want {
-			t.Errorf("%+v usable = %v, want %v", tc.rule, got, tc.want)
-		}
-	}
-	if err := (DestRule{Mode: OutputCustom}).Validate("筛选转移"); err == nil {
-		t.Error("expected a validation error for a custom rule with no directory")
-	}
-	if err := (DestRule{Mode: "nonsense"}).Validate("筛选转移"); err == nil {
-		t.Error("expected a validation error for an unknown mode")
 	}
 }
 
@@ -259,8 +223,9 @@ func TestFilterSpecEnabled(t *testing.T) {
 	}
 }
 
-// HandlesExcluded is what decides whether an excluded file gets relocated, so it
-// must be false whenever the action or the destination is unusable.
+// HandlesExcluded is what decides whether an excluded file gets relocated, and
+// only the action decides it: every directory expression has a meaning, the blank
+// one being "the file's own directory".
 func TestFilterSpecHandlesExcluded(t *testing.T) {
 	cases := []struct {
 		name string
@@ -268,9 +233,10 @@ func TestFilterSpecHandlesExcluded(t *testing.T) {
 		want bool
 	}{
 		{"保持原处", FilterSpec{Action: ActionKeep}, false},
-		{"移动但没目录", FilterSpec{Action: ActionMove, Dest: DestRule{Mode: OutputCustom}}, false},
-		{"移动到指定目录", FilterSpec{Action: ActionMove, Dest: DestRule{Mode: OutputCustom, Dir: "D:/x"}}, true},
-		{"复制到镜像目录", FilterSpec{Action: ActionCopy, Dest: DestRule{Mode: OutputMirror, Dir: "D:/x"}}, true},
+		{"没选动作", FilterSpec{}, false},
+		{"移动到源目录", FilterSpec{Action: ActionMove}, true},
+		{"移动到指定目录", FilterSpec{Action: ActionMove, Dir: DirSpec{Mode: OutputCustom, Dir: "D:/x"}}, true},
+		{"复制到镜像目录", FilterSpec{Action: ActionCopy, Dir: DirSpec{Mode: OutputCustom, Dir: "D:/x", KeepTree: true}}, true},
 	}
 	for _, tc := range cases {
 		if got := tc.spec.HandlesExcluded(); got != tc.want {
@@ -283,8 +249,8 @@ func TestFilterSpecHandlesExcluded(t *testing.T) {
 // should never offer, so Handles must be false for it.
 func TestProblemSpecStatusRouting(t *testing.T) {
 	p := ProblemSpec{
-		ErrorAction: ActionMove, ErrorDest: DestRule{Mode: OutputCustom, Dir: "D:/err"},
-		WarningAction: ActionMark, WarningDest: DestRule{Mode: OutputMirror, Dir: "D:/warn"},
+		ErrorAction: ActionMove, ErrorDir: DirSpec{Mode: OutputCustom, Dir: "D:/err"},
+		WarningAction: ActionMark, WarningDir: DirSpec{Mode: OutputCustom, Dir: "D:/warn"},
 	}
 	if p.Handles(StatusWarning) {
 		t.Error("mark must not relocate a warning file")
@@ -292,11 +258,11 @@ func TestProblemSpecStatusRouting(t *testing.T) {
 	if !p.Handles("error") {
 		t.Error("move should relocate an error file")
 	}
-	if p.Action(StatusWarning) != ActionMark || p.Dest(StatusWarning).Dir != "D:/warn" {
-		t.Errorf("warning routing wrong: %q %+v", p.Action(StatusWarning), p.Dest(StatusWarning))
+	if p.Action(StatusWarning) != ActionMark || p.Dir(StatusWarning).Dir != "D:/warn" {
+		t.Errorf("warning routing wrong: %q %+v", p.Action(StatusWarning), p.Dir(StatusWarning))
 	}
-	if p.Action("error") != ActionMove || p.Dest("error").Dir != "D:/err" {
-		t.Errorf("error routing wrong: %q %+v", p.Action("error"), p.Dest("error"))
+	if p.Action("error") != ActionMove || p.Dir("error").Dir != "D:/err" {
+		t.Errorf("error routing wrong: %q %+v", p.Action("error"), p.Dir("error"))
 	}
 }
 

@@ -1,8 +1,6 @@
 package store
 
 import (
-	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -11,65 +9,6 @@ const GlobalTemplateID = "t-global"
 
 // GlobalTemplateName is the display name of that template.
 const GlobalTemplateName = "全局模板"
-
-// ---------------------------------------------------------------------------
-// DestRule — 每一段产物都能自己决定"放到哪"
-// ---------------------------------------------------------------------------
-
-// DestRule says where one stage writes its files. The main output, the files
-// rejected by the filter rules and the problem files (failed / warning) all use
-// it, so every stage offers the same four choices instead of one hard-coded
-// directory. A blank field inherits from the fallback rule.
-type DestRule struct {
-	Mode   string `json:"mode"`   // "" | same | sibling | custom | mirror
-	Dir    string `json:"dir"`    // custom / mirror 使用的根目录
-	Suffix string `json:"suffix"` // sibling 使用的后缀，如 _out
-}
-
-// Inherit fills every blank field from fb.
-func (d DestRule) Inherit(fb DestRule) DestRule {
-	if strings.TrimSpace(d.Mode) == "" {
-		d.Mode = fb.Mode
-	}
-	if strings.TrimSpace(d.Dir) == "" {
-		d.Dir = fb.Dir
-	}
-	if strings.TrimSpace(d.Suffix) == "" {
-		d.Suffix = fb.Suffix
-	}
-	return d
-}
-
-// Usable reports whether the rule points at a real directory. Modes other than
-// "same" and "sibling" need Dir; an empty one is a configuration mistake worth
-// reporting rather than silently writing next to the source.
-func (d DestRule) Usable() bool {
-	switch d.Mode {
-	case OutputCustom, OutputMirror:
-		return strings.TrimSpace(d.Dir) != ""
-	default:
-		return true
-	}
-}
-
-// Validate returns a user-facing error when the rule cannot be used.
-func (d DestRule) Validate(label string) error {
-	switch d.Mode {
-	case "", OutputSame, OutputSibling:
-		return nil
-	case OutputCustom:
-		if strings.TrimSpace(d.Dir) == "" {
-			return fmt.Errorf("「%s」选择了指定目录，但目录为空", label)
-		}
-	case OutputMirror:
-		if strings.TrimSpace(d.Dir) == "" {
-			return fmt.Errorf("「%s」选择了指定目录（源目录结构），但目录为空", label)
-		}
-	default:
-		return fmt.Errorf("「%s」的输出方式无效：%s", label, d.Mode)
-	}
-	return nil
-}
 
 // ---------------------------------------------------------------------------
 // The four inheritable sections
@@ -133,10 +72,10 @@ type FilterSpec struct {
 	ExcludeExts []string `json:"excludeExts"`
 
 	// What to do with rejected files.
-	Action        string   `json:"action"` // keep | move | copy
-	Dest          DestRule `json:"dest"`
-	RenamePattern string   `json:"renamePattern"`
-	Overwrite     bool     `json:"overwrite"`
+	Action        string  `json:"action"` // keep | move | copy
+	Dir           DirSpec `json:"dir"`
+	RenamePattern string  `json:"renamePattern"`
+	Overwrite     bool    `json:"overwrite"`
 }
 
 // Enabled reports whether any filter rule is active.
@@ -148,8 +87,10 @@ func (f FilterSpec) Enabled() bool {
 }
 
 // HandlesExcluded reports whether rejected files should be moved or copied.
+// There is no second condition on the destination: every DirSpec has a meaning,
+// the blank one being "the file's own directory".
 func (f FilterSpec) HandlesExcluded() bool {
-	return (f.Action == ActionMove || f.Action == ActionCopy) && f.Dest.Usable()
+	return f.Action == ActionMove || f.Action == ActionCopy
 }
 
 // ProblemSpec is the policy for files that failed or produced warnings.
@@ -159,12 +100,12 @@ func (f FilterSpec) HandlesExcluded() bool {
 // "keep the original file name". {ext} is the *source* extension here: nothing
 // is re-encoded, the original file is the thing being moved.
 type ProblemSpec struct {
-	ErrorAction    string   `json:"errorAction"` // keep | move | copy
-	ErrorDest      DestRule `json:"errorDest"`
-	ErrorPattern   string   `json:"errorPattern,omitempty"`
-	WarningAction  string   `json:"warningAction"` // keep | move | copy | mark
-	WarningDest    DestRule `json:"warningDest"`
-	WarningPattern string   `json:"warningPattern,omitempty"`
+	ErrorAction    string  `json:"errorAction"` // keep | move | copy
+	ErrorDir       DirSpec `json:"errorDir"`
+	ErrorPattern   string  `json:"errorPattern,omitempty"`
+	WarningAction  string  `json:"warningAction"` // keep | move | copy | mark
+	WarningDir     DirSpec `json:"warningDir"`
+	WarningPattern string  `json:"warningPattern,omitempty"`
 }
 
 // Pattern returns the rename template for the given status, or "" when the file
@@ -184,12 +125,12 @@ func (p ProblemSpec) Handles(status string) bool {
 	return p.ErrorAction == ActionMove || p.ErrorAction == ActionCopy
 }
 
-// Dest returns the destination rule for the given status.
-func (p ProblemSpec) Dest(status string) DestRule {
+// Dir returns the destination rule for the given status.
+func (p ProblemSpec) Dir(status string) DirSpec {
 	if status == StatusWarning {
-		return p.WarningDest
+		return p.WarningDir
 	}
-	return p.ErrorDest
+	return p.ErrorDir
 }
 
 // Action returns the action for the given status.
@@ -206,23 +147,17 @@ const StatusWarning = "warning"
 // ExistingSpec is the policy for a source file this template has already produced
 // output for. It carries exactly the fields as the filter's "被排除文件的处理"
 // block, and means exactly the same thing: 留在原处 / 移动 / 复制, with the same
-// DestRule and rename template behind it.
+// DirSpec and rename template behind it.
 //
 // It acts on the SOURCE file, never on the output. Running the same template over
 // the same folder a second time is the case it exists for, and re-encoding files
 // that are already done is the thing worth avoiding -- so a repeat pass does not
 // reach ffmpeg at all.
 type ExistingSpec struct {
-	Action    string   `json:"action"` // "" (留在原处) | move | copy
-	Dest      DestRule `json:"dest"`
-	Pattern   string   `json:"pattern,omitempty"`
-	Overwrite bool     `json:"overwrite"`
-}
-
-// Moves reports whether the source file is relocated rather than left where it
-// is. The destination has to be usable, or there is nowhere to put it.
-func (e ExistingSpec) Moves() bool {
-	return (e.Action == ActionMove || e.Action == ActionCopy) && e.Dest.Usable()
+	Action    string  `json:"action"` // "" (留在原处) | move | copy
+	Dir       DirSpec `json:"dir"`
+	Pattern   string  `json:"pattern,omitempty"`
+	Overwrite bool    `json:"overwrite"`
 }
 
 // ---------------------------------------------------------------------------
@@ -237,12 +172,10 @@ func DefaultGlobalTemplate() Template {
 		Name:        GlobalTemplateName,
 		Description: "所有模板的默认值。新建模板会以它为起点；模板里留空的项也跟随它。",
 		Global:      true,
-		UpdatedAt:   0,
 	}
-	t.OutMode = OutputSibling
-	t.OutSuffix = DefaultOutputSuffix
+	t.OutDirSpec = DirSpec{Mode: OutputSibling, Suffix: DefaultOutputSuffix, KeepTree: true}
 	// The directory already carries the suffix, so the file name is left alone:
-	// /video/mmd/a.mp4 -> /video/mmd_out/a.mp4. Adding "_out" to the name as well
+	// /video/mmd/a.mp4 -> /video_out/mmd/a.mp4. Adding "_out" to the name as well
 	// would just be noise on top of the new directory.
 	//
 	// The pattern is the file *name*: no {ext} here. The extension comes from the
@@ -259,14 +192,14 @@ func DefaultGlobalTemplate() Template {
 	// "feature is off" state: a template opts in by opening the section.
 
 	t.Filter = &FilterSpec{Action: ActionKeep}
-	t.Filter.Dest = DestRule{Mode: OutputCustom}
 
 	t.Problems = &ProblemSpec{
 		ErrorAction:   ActionKeep,
 		WarningAction: ActionMark,
 	}
-	t.Problems.ErrorDest = DestRule{Mode: OutputCustom}
-	t.Problems.WarningDest = DestRule{Mode: OutputMirror}
+	// 三段搬迁的目录一律留空（= 源文件所在目录）。默认动作是「留在原处」和
+	//「仅在结果中标记」，所以它们本来就是不写盘的状态；真要去别处，用户自己在
+	// 界面上选一种输出方式，比预设一个他没要过的目录更省事。
 	return t
 }
 
@@ -315,6 +248,11 @@ func EnsureGlobal(list []Template) ([]Template, bool) {
 // template does not override is taken from the global one, so a template only
 // has to describe what makes it different.
 //
+// "Not overridden" is decided per section and nowhere else: the four pointer
+// sections use nil, the output section uses OutputOverride. A blank field inside
+// an overridden section means that field's own plain default, never the global
+// value -- see the note in the body and TestEffectiveBlankOutputFieldsStayBlank.
+//
 // The returned template shares the global template's section pointers; treat it
 // as read-only. Do not call Normalize on it -- that would write through to the
 // global template.
@@ -324,25 +262,18 @@ func (t Template) Effective(global Template) Template {
 		out.Name = global.Name
 	}
 
-	// 输出与命名：整段跟随。开关关着时模板自己写的值一律不采纳——否则界面上
-	// 显示「跟随全局」，实际却用着模板的旧值，两边说法不一致。
+	// 输出与命名：整段跟随，段级开关是**唯一**的继承方式。
+	//
+	// 开关关着时模板自己写的值一律不采纳——否则界面上显示「跟随全局」，实际却用着
+	// 模板的旧值，两边说法不一致。
+	//
+	// 开关打开之后，段内留空的字段**不**再回落全局，而是各归各的最朴素默认：方式留空
+	// =与源文件同目录（ResolveDestDir），名称留空=源文件名（ResolveOutput）。两级
+	// 「留空即跟随」（段一级 + 字段一级）本身就是同一个意思说了两遍，而字段级的那个
+	// 更糟：用户在界面上把「与全局不同」打开了，看到的却还是全局的目录，只能靠一行
+	// 提示文字才知道。留空现在只有一个意思——"我就要最普通的那个"。
 	if !out.OutputOverride {
-		out.OutMode = ""
-		out.OutDir = ""
-		out.OutSuffix = ""
-		out.OutPattern = ""
-	}
-	// 段内再逐字段留空即回落：打开开关但没改的字段跟全局等价。
-	if strings.TrimSpace(out.OutMode) == "" {
-		out.OutMode = global.OutMode
-	}
-	if strings.TrimSpace(out.OutDir) == "" {
-		out.OutDir = global.OutDir
-	}
-	if strings.TrimSpace(out.OutSuffix) == "" {
-		out.OutSuffix = global.OutSuffix
-	}
-	if strings.TrimSpace(out.OutPattern) == "" {
+		out.OutDirSpec = global.OutDirSpec
 		out.OutPattern = global.OutPattern
 	}
 
@@ -416,77 +347,4 @@ func NewFromGlobal(global Template) Template {
 	// than one that leaves it alone: it costs time and cannot improve quality.
 	t.AudioMode = ModeCopy
 	return t
-}
-
-// ---------------------------------------------------------------------------
-// Dest resolution shared by every stage
-// ---------------------------------------------------------------------------
-
-// DestRequest asks where a file should land under a rule.
-type DestRequest struct {
-	Rule    DestRule
-	SrcPath string
-	// SrcRoot is the directory the user added; it anchors "sibling" and "mirror".
-	SrcRoot string
-	// DefaultSuffix is used when neither the rule nor the fallback names one.
-	DefaultSuffix string
-}
-
-// ResolveDestDir returns the directory a file should be written to, honouring
-// the same four modes everywhere.
-func ResolveDestDir(req DestRequest) (string, error) {
-	if err := req.Rule.Validate("输出"); err != nil {
-		return "", err
-	}
-	srcDir := filepath.Dir(req.SrcPath)
-	suffix := strings.TrimSpace(req.Rule.Suffix)
-	if suffix == "" {
-		suffix = strings.TrimSpace(req.DefaultSuffix)
-	}
-	if suffix == "" {
-		suffix = DefaultOutputSuffix
-	}
-
-	// subDir returns the path of srcDir relative to the added root, or "" when
-	// the file sits directly in the root.
-	subDir := func() string {
-		if req.SrcRoot == "" {
-			return ""
-		}
-		rel, err := filepath.Rel(req.SrcRoot, srcDir)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-			return ""
-		}
-		return rel
-	}
-
-	switch req.Rule.Mode {
-	case OutputCustom:
-		return strings.TrimSpace(req.Rule.Dir), nil
-	case OutputMirror:
-		root := strings.TrimSpace(req.Rule.Dir)
-		if root == "" {
-			return "", fmt.Errorf("已选择「指定目录（源目录结构）」，但目录为空")
-		}
-		if rel := subDir(); rel != "" {
-			return filepath.Join(root, rel), nil
-		}
-		return root, nil
-	case OutputSibling:
-		// Sibling of the folder that was added, sub-tree preserved:
-		//   /video/mmd/a.mp4      -> /video/mmd_out/a.mp4
-		//   /video/mmd/sub/b.mp4  -> /video/mmd_out/sub/b.mp4
-		// A sibling (rather than "next to the source") also keeps results outside
-		// the scanned tree, so re-running never picks them up again.
-		outRoot := srcDir + suffix
-		if req.SrcRoot != "" {
-			outRoot = req.SrcRoot + suffix
-		}
-		if rel := subDir(); rel != "" {
-			return filepath.Join(outRoot, rel), nil
-		}
-		return outRoot, nil
-	default: // OutputSame and the empty mode
-		return srcDir, nil
-	}
 }

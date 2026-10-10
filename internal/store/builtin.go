@@ -1,7 +1,5 @@
 package store
 
-import "time"
-
 func bt(t Template) Template {
 	t.Builtin = true
 	t.Normalize()
@@ -15,7 +13,6 @@ func bt(t Template) Template {
 // wants a preset to behave differently from the default can switch the section
 // on in the editor without the shipped list second-guessing them.
 func BuiltinTemplates() []Template {
-	now := time.Now().Unix()
 	list := []Template{
 		bt(Template{
 			Name:        "无损转封装",
@@ -186,9 +183,6 @@ func BuiltinTemplates() []Template {
 			VideoMode:   ModeCopy,
 			AudioMode:   ModeCopy,
 		}),
-	}
-	for i := range list {
-		list[i].UpdatedAt = now
 	}
 	return list
 }

@@ -128,6 +128,15 @@ type Job struct {
 	// the file is gone.
 	OutputDeleted bool `json:"outputDeleted"`
 
+	// SourceMovedTo is where the 「已处理过的文件」 rule filed the source, when that
+	// rule is set to 移动. The path in Input is gone after that, so 定位源文件 needs
+	// a second place to look -- and it has to be the app that remembers it, since
+	// nothing else in the row still knows.
+	//
+	// 复制 deliberately does not set it: the original is still there and still the
+	// file, so pointing at the copy would send the user to the wrong one.
+	SourceMovedTo string `json:"sourceMovedTo"`
+
 	RecordID string `json:"recordId"`
 
 	// mu is a pointer so that a snapshot (a plain value copy) never duplicates

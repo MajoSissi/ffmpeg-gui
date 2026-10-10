@@ -21,18 +21,65 @@ f.addEventListener('load', function () {
   const cat = p.get('cat');
   const modal = p.get('modal');
 
-  function click(sel) {
-    const el = d.querySelector(sel);
-    if (el) { el.click(); return true; }
-    // Report the miss into the driver document: a silent miss produces a
-    // screenshot of the wrong page, which is worse than a visible error.
+  /**
+   * 往父文档里记一笔。
+   *
+   * 截图和探针都看不见的事（漏点、iframe 里抛的异常）只有这里说得出来，所以两类
+   * 都走这一个出口。
+   */
+  function note(text) {
     const log = document.getElementById('drivelog') || (function () {
       const pre = document.createElement('pre');
       pre.id = 'drivelog';
       document.body.appendChild(pre);
       return pre;
     })();
-    log.textContent += 'MISS ' + sel + '\n';
+    log.textContent += text + '\n';
+  }
+
+  /** 记一笔没命中的选择器：截图/探针里看不出来的空点是这里唯一会说话的地方。 */
+  function miss(sel) {
+    note('MISS ' + sel);
+  }
+
+  /**
+   * 链条断在半路时唯一的证据。
+   *
+   * 写进 #probeout（探针和 dump 都读它），而不是只写进 drivelog：drive.py 找不到
+   * #probeout 就把整件事报成"没跑完"，错误原文反而被丢掉。
+   */
+  function fail(where, e) {
+    const text = 'DRIVER ERROR at ' + where + ': ' + ((e && (e.stack || e.message)) || e);
+    note(text);
+    out(text);
+  }
+
+  // iframe 里抛的异常不会走到驱动这边：点击处理函数是 async，抛出来只是一条没人
+  // 管的 rejection。链条于是停在半路，而 dump 里连 #probeout 都没有 —— 看起来和
+  // "驱动压根没跑"一模一样，只能靠二分去猜。挂两个监听把它记下来。
+  try {
+    this.contentWindow.addEventListener('error', (e) => note('APP ERROR: ' + (e.message || e)));
+    this.contentWindow.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason;
+      note('APP REJECT: ' + ((r && (r.stack || r.message)) || r));
+    });
+  } catch (_) { /* 拿不到 contentWindow 就算了，别把驱动一起弄死 */ }
+
+  function click(sel, mods) {
+    const el = d.querySelector(sel);
+    // el.click() 造不出修饰键：它派发的是一个不带 ctrlKey / shiftKey 的 MouseEvent，
+    // 而列表多选正是靠这两个键分叉的 —— 少了它们，"Ctrl 点出去勾了第二行"和"Shift 连选"
+    // 在探针里和普通单击长得一模一样，于是唯一能验多选的那条路就没了。
+    if (el) {
+      if (!mods) { el.click(); return true; }
+      el.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift,
+      }));
+      return true;
+    }
+    // Report the miss into the driver document: a silent miss produces a
+    // screenshot of the wrong page, which is worse than a visible error.
+    miss(sel);
     return false;
   }
 
@@ -40,6 +87,40 @@ f.addEventListener('load', function () {
   // the app. Use this to prove the selectors match before trusting any capture.
   // It runs at the END of the same navigation chain, not instead of it: probing the
   // task page when the URL asked for the template page proves nothing about it.
+  function out(text) {
+    // The probe has to write into the PARENT document: --dump-dom does not
+    // serialize a cross-document iframe, so a result written into the app's own
+    // body is invisible to whoever reads the dump.
+    const pre = document.getElementById('probeout') || (function () {
+      const el = document.createElement('pre');
+      el.id = 'probeout';
+      document.body.appendChild(el);
+      return el;
+    })();
+    pre.textContent = text;
+  }
+
+  /**
+   * expr=<js>: run an expression inside the app document and print the result.
+   *
+   * The probe list below answers "is this element there"; a question like "is the
+   * switch disabled" or "what does the follow hint say" needs the elements
+   * themselves, and this is the shortest way in. `d` is the app's document; a
+   * string comes back as-is, anything else as JSON.
+   */
+  function runExpr(src) {
+    try {
+      // `return (...)`, not a bare body: a Function body does not hand back the
+      // value of its last expression, so expr=1+1 would come out as undefined --
+      // which looks exactly like an expression that ran and found nothing.
+      const v = new Function('d', 'return (' + src + ');')(d);
+      const text = typeof v === 'string' ? v : JSON.stringify(v, null, 1);
+      out(text === undefined ? String(v) : text);
+    } catch (e) {
+      out('EXPR ERROR: ' + ((e && e.message) || e));
+    }
+  }
+
   function probe() {
     const probeSels = [
       '.rail__item[data-page="settings"]',
@@ -59,7 +140,50 @@ f.addEventListener('load', function () {
       '[data-sec="filter"]',
       '[data-sec="problems"]',
       '.follow',
+      // 「输出方式」+ 目录 + 前缀 / 后缀 + 「保留目录结构」：五段各一组，
+      // 少一个就是那一段的某个框没画出来（而它们长得一模一样，截图看不出来）。
+      'select[name="outMode"]',
+      'input[name="outDir"]',
+      'input[name="outPrefix"]',
       'input[name="outSuffix"]',
+      'input[name="outKeepTree"]',
+      'select[name="fMode"]',
+      'input[name="fDir"]',
+      'input[name="fPrefix"]',
+      'input[name="fSuffix"]',
+      'input[name="fKeepTree"]',
+      'select[name="exMode"]',
+      'input[name="exDir"]',
+      'input[name="exPrefix"]',
+      'input[name="exSuffix"]',
+      'input[name="exKeepTree"]',
+      'select[name="prErrorMode"]',
+      'input[name="prErrorDir"]',
+      'input[name="prErrorPrefix"]',
+      'input[name="prErrorSuffix"]',
+      'input[name="prErrorKeepTree"]',
+      'select[name="prWarningMode"]',
+      'input[name="prWarningDir"]',
+      'input[name="prWarningPrefix"]',
+      'input[name="prWarningSuffix"]',
+      'input[name="prWarningKeepTree"]',
+      // 变量表：可点复制的 token，一行两个。数量对不上就是表格漏了变量。
+      '.vargrid .var-chip',
+      '.vargrid__cell',
+      '.vargrid__group',
+      // 路径测试：填一个输入文件，结果区给出三条（源文件目录 / 输出目录 / 输出文件）。
+      // 输入框刻意没有 name，量它必须按 data-role。
+      '[data-role="path-test"]',
+      '[data-act="pick-test-file"]',
+      '[data-role="path-test-out"] .pathtest__line',
+      // 开关：界面里"打开/关闭"只该有这一种样子。`.check` 只留给列表多选，
+      // 所以只量「当前这一页」——不加前缀会数到别的页的列表（模板页也能报出
+      // 11 个），看着像"参数框又变回原生勾选了"。
+      '.switch-inline',
+      '.switch-row .switch',
+      '.page:not([hidden]) label.check',
+      // 参数行的启用框：数量 = 参数行数，且必须住在 `.switch-inline` 里。
+      '[data-arg="enabled"]',
       'input[name="pConcurrency"]',
       'input[name="logMaxSizeMB"]',
       'input[name="logKeepDays"]',
@@ -67,15 +191,73 @@ f.addEventListener('load', function () {
       // The editor's own selects: a section that renders but with no options is
       // indistinguishable from one that rendered correctly, from a screenshot.
       'select[name="exAction"]',
-      'select[name="exDestMode"]',
-      'select[name="outMode"]',
+      'select[name="prWarningMode"]',
       'select[name="fAction"]',
       'select[name="prErrorAction"]',
+      // 两张列表的分页条与批量条。加 `.page:not([hidden])` 前缀：所有视图都挂在
+      // DOM 上（只有一个是显示的），不加前缀每张列表的东西都会被数成两份。
+      '.page:not([hidden]) .pager',
+      '.page:not([hidden]) .pager [data-role="pager-size"]',
+      '.page:not([hidden]) .pager [data-role="pager-page"]',
+      '.page:not([hidden]) .pager [data-role="pager-range"]',
+      '.page:not([hidden]) .pager [data-role="pager-prev"]',
+      '.page:not([hidden]) .pager [data-role="pager-next"]',
+      '.page:not([hidden]) .bulkbar',
+      '.page:not([hidden]) [data-role="check-all"]',
+      '.page:not([hidden]) tbody tr[data-id]',
+      '.page:not([hidden]) [data-role="from"]',
+      '.page:not([hidden]) [data-role="to"]',
+      '.page:not([hidden]) [data-role="sort"]',
+      // 定位入口：行里两颗（源文件 / 输出），任务详情面板两张卡片各一颗，记录详情
+      // 弹窗底部两颗。分开量 —— 一颗在两种目标之间二选一的按钮，和两颗各自管一个
+      // 目标的按钮，在截图里长得一模一样。
+      '.page:not([hidden]) tbody [data-act="locate-source"]',
+      '.page:not([hidden]) tbody [data-act="locate-output"]',
+      '[data-role="details"] [data-act="locate-source"]',
+      '[data-role="details"] [data-act="locate-output"]',
+      '.modal [data-locate-source]',
+      '.modal [data-locate-output]',
+      // 任务页工具栏上的方案下拉（本次运行按哪套收）+「过滤」页。两边都要量：下拉里有
+      // 几个选项、选中的是哪一个，和"这套方案里到底写了什么"是两件事。
+      '.page:not([hidden]) [data-role="profile"]',
+      '.page:not([hidden]) [data-role="profile"].is-off',
+      '.page:not([hidden]) .toolbar__field',
+      // 第二行那两个下拉旁边的行内标注。少了它们，"模板"和"过滤"两个框长得一模一样，
+      // 而下拉里装的是模板名和方案名，念不出来。
+      '.page:not([hidden]) .toolbar__label',
+      '.fscan-page .tpl-row',
+      '.fscan-page .tpl-row.is-active',
+      '.fscan-page .badge',
+      '.fscan-page [data-role="search"]',
+      '.fscan-page [data-act="new-profile"]',
+      '.fscan-page [data-act="save-as"]',
+      '.fscan-page [data-act="drop-profile"]',
+      '.fscan-page [data-act="save"]',
+      '.fscan-page [data-role="pname"]',
+      '.fscan-page [data-role="pdesc"]',
+      '.fscan-page .tpl-row.is-checked',
+      // 两组规则各一套开关和条件。分开量："文件那一组整个没画出来"只看截图是发现不了
+      // 的 —— 两组长得一模一样，少一组只会让页面看起来短一点。
+      '.fscan-page [data-group="dirs"]',
+      '.fscan-page [data-group="files"]',
+      '.fscan-page [data-group="dirs"] [data-role^="sw-"]',
+      '.fscan-page [data-group="files"] [data-role^="sw-"]',
+      '.fscan-page [data-group="dirs"] [data-role="cond"]',
+      '.fscan-page [data-group="files"] [data-role="cond"]',
+      '.fscan-page [data-group="dirs"] [data-role="mode"]',
+      '.fscan-page [data-group="files"] [data-role="mode"]',
+      '.fscan-page [data-act="add-cond"]',
+      '.fscan-page [data-act="drop-cond"]',
+      // 试的目录是手输框 + 一颗"从资源管理器里挑"的按钮。两条路落在同一个 testDir
+      // 上，少一颗就是"只能手输"，而截图里有没有那颗按钮很容易看漏。
+      '.fscan-page [data-role="testdir"]',
+      '.fscan-page [data-act="pick-test"]',
+      '.fscan-page [data-role="out"] .fscan__item',
     ];
     // Report what each select actually offers. "跟随全局设置" used to sit next to
     // the 与全局不同 switch, which is two controls for one state; a count plus the
     // option list is the only way to prove it is gone.
-    var selLines = ['exAction', 'exDestMode', 'outMode', 'fAction', 'prErrorAction'].map(function (n) {
+    var selLines = ['exAction', 'fAction', 'prErrorAction'].map(function (n) {
       var s = d.querySelector('select[name="' + n + '"]');
       if (!s) return '   -  ' + n + ' (absent)';
       return '   ' + String(s.options.length) + '  ' + n + ': '
@@ -85,16 +267,201 @@ f.addEventListener('load', function () {
     const lines = probeSels.map(function (s) {
       return String(d.querySelectorAll(s).length).padStart(3) + '  ' + s;
     });
+    // 分页条上的字：页码、范围、每页条数、两个箭头是否灰着。这些都量得到，就不必
+    // 靠截图去猜「50 条一页有没有生效」。
+    var live = '.page:not([hidden])';
+    var pager = d.querySelector(live + ' [data-role="pager"]');
+    // 首/末行的文件名和完成时间：排序方向、日期区间有没有真的生效，看这两个比看
+    // 「共几条」更直接（条数相同但内容不同的情况是存在的）。
+    var cellText = function (row, i) {
+      var c = row && row.children[i];
+      return c ? (c.textContent || '').trim().replace(/\s+/g, ' ') : '—';
+    };
+    var rowsNow = d.querySelectorAll(live + ' tbody tr[data-id]');
+    var pagerLines = pager ? [
+      '   范围: ' + (pager.querySelector('[data-role="pager-range"]') || {}).textContent,
+      '   页码: ' + (pager.querySelector('[data-role="pager-page"]') || {}).textContent,
+      '   每页可选: ' + Array.from(pager.querySelectorAll('[data-role="pager-size"] option')).map(function (o) { return o.value; }).join('|'),
+      '   每页现在: ' + pager.querySelector('[data-role="pager-size"]').value,
+      '   上一页灰: ' + pager.querySelector('[data-role="pager-prev"]').disabled
+        + ' · 下一页灰: ' + pager.querySelector('[data-role="pager-next"]').disabled,
+      '   表内行数: ' + d.querySelectorAll(live + ' tbody tr[data-id]').length,
+      '   计数 chip: ' + (d.querySelector(live + ' [data-role="count"]') || d.querySelector(live + ' [data-role="stat-total"]') || {}).textContent,
+      // bulk-label 也要限定在显示着的这一页里取：两张列表各有一个，不加前缀量到的
+      // 是第一张列表那个（永远是 0），看起来就像「全选没生效」。
+      '   批量条: ' + (function () {
+        var bar = d.querySelector(live + ' [data-role="bulkbar"]');
+        if (!bar) return '（没有）';
+        var label = bar.querySelector('[data-role="bulk-label"]');
+        return bar.hidden ? '收起' : '显示 ' + (label ? label.textContent : '?');
+      })(),
+      '   已勾选: ' + d.querySelectorAll(live + ' tbody input[type=checkbox]:checked').length
+        + ' · 表头框: ' + ((d.querySelector(live + ' [data-role="check-all"]') || {}).checked),
+      '   日期框: from=' + (d.querySelector(live + ' [data-role="from"]') || {}).value
+        + ' to=' + (d.querySelector(live + ' [data-role="to"]') || {}).value
+        + ' 排序=' + (d.querySelector(live + ' [data-role="sort"]') || {}).value,
+      '   首行: ' + cellText(rowsNow[0], 1) + ' | 完成时间 ' + cellText(rowsNow[0], 8),
+      '   末行: ' + cellText(rowsNow[rowsNow.length - 1], 1) + ' | 完成时间 ' + cellText(rowsNow[rowsNow.length - 1], 8),
+    ].join('\n') : '   （这一页没有分页条）';
+    // 定位入口。按钮本身只有一个图标，所以「这一行说的是哪个文件」只写在 title
+    // 里 —— 搬走过的行要写出落点，没搬过的不写。数一数有多少行写了，是这句话唯一
+    // 量得到的证据。
+    var srcTitles = Array.from(rowsNow).map(function (tr) {
+      var b = tr.querySelector('[data-act="locate-source"]');
+      return b ? b.title : '（没有源文件入口）';
+    });
+    var pick = function (sel) {
+      var b = d.querySelector(sel);
+      if (!b) return '（没有）';
+      return (b.disabled ? '[灰] ' : '') + b.title;
+    };
+    // 「已移动」那一行只有真的搬走过才会有。dt 的文本是它唯一的存在证据 —— 有落点
+    // 的行却不写出来，用户看到的源文件路径就是个空的。
+    var movedRowsIn = function (sel) {
+      return Array.from(d.querySelectorAll(sel + ' .kv dt')).filter(function (t) {
+        return (t.textContent || '').trim() === '已移动';
+      }).length;
+    };
+    var locateLines = [
+      '   出口数: ' + d.querySelectorAll(live + ' tbody [data-act="locate-source"]').length
+        + ' 源 / ' + d.querySelectorAll(live + ' tbody [data-act="locate-output"]').length + ' 输出',
+      '   写了落点的行: ' + srcTitles.filter(function (s) { return s.indexOf('已移动') >= 0; }).length
+        + ' / ' + srcTitles.length,
+      '   第 1 行源文件入口: ' + (srcTitles[0] || '—'),
+      '   面板/弹窗里的入口: 源 ' + pick('[data-role="details"] [data-act="locate-source"]')
+        + ' · 输出 ' + pick('[data-role="details"] [data-act="locate-output"]'),
+      '   面板落点行: ' + movedRowsIn('[data-role="details"]') + ' · 弹窗落点行: ' + movedRowsIn('.modal'),
+      // 点过一次定位之后，提示条是「落到了第二个位置」唯一说得出来的地方。
+      '   提示条: ' + (Array.from(d.querySelectorAll('.toasts .toast')).map(function (t) {
+        return (t.textContent || '').trim();
+      }).join(' | ') || '（没有）'),
+    ].join('\n');
+    // 任务页工具栏上那个方案下拉：它有哪几个选项、现在选中的是哪一个、以及选中的是不是
+    // 「不使用过滤」。三件事都要报：禁用是一个真实选项（值为空串），不是"下拉被清空了"。
+    var psel = d.querySelector('.page:not([hidden]) [data-role="profile"]');
+    var chipLines = psel ? [
+      '   方案下拉: ' + psel.options.length + ' 个 ['
+        + Array.from(psel.options).map(function (o) { return o.textContent; }).join(' | ')
+        + '] → ' + (psel.value || '（空 = 不使用过滤）'),
+      '   禁用样式: ' + (psel.classList.contains('is-off') ? '有（不做任何筛选）' : '无（在用某一套）'),
+      '   title: ' + (psel.title || '（没有）').replace(/\n/g, ' ／ '),
+      '   灰着: ' + psel.disabled,
+    ].join('\n') : '   （这一页没有方案下拉）';
+    // 「过滤」页。判据是**这一页显示着**，不是 `.fscan-page` 在不在 DOM 里：所有视图
+    // 都挂在 DOM 上，只有一个不 hidden。
+    var fp = d.querySelector('.page:not([hidden]) .fscan-page');
+    var scan = fp && fp.querySelector('[data-role="out"]');
+    // 两组各按 data-role 取开关，不按下标：加一颗新的不该让整行错位，而错位之后报出来
+    // 的还是一串"开/关"，看不出哪一颗是哪一颗。
+    var swAt = function (group, key) {
+      var b = fp && fp.querySelector('[data-group="' + group + '"] [data-role="sw-' + key + '"]');
+      return !b ? '（没有）' : (b.checked ? '开' : '关') + (b.disabled ? '·灰' : '');
+    };
+    var groupAt = function (g) {
+      var host = fp && fp.querySelector('[data-group="' + g + '"]');
+      if (!host) return '   ' + g + ': 没有这一组';
+      return '   ' + g + ': 条件 ' + host.querySelectorAll('[data-role="cond"]').length + ' 行'
+        + ' · 值 [' + Array.from(host.querySelectorAll('[data-role="value"]'))
+          .map(function (i) { return i.value || '（空）'; }).join(' | ') + ']'
+        + ' · 方式 [' + Array.from(host.querySelectorAll('[data-role="mode"]'))
+          .map(function (s) { return s.value; }).join(' | ') + ']'
+        + ' · 灰 ' + host.querySelectorAll('[data-role="value"][disabled]').length
+        + ' · 可删 ' + Array.from(host.querySelectorAll('[data-act="drop-cond"]'))
+          .filter(function (b) { return !b.hidden; }).length;
+    };
+    var scanLines = fp ? [
+      // 方案表：名字、哪一套是正在编辑的、哪几套被勾着。勾选和"正在编辑"是两件事 ——
+      // 两者都用同一个高亮的话，Ctrl 点出来的一串里只有最后那行会变色。
+      '   方案表: ' + (function () {
+        var rows = Array.from(fp.querySelectorAll('.tpl-row'));
+        if (!rows.length) return '（没有方案）';
+        return rows.map(function (r) {
+          var tags = Array.from(r.querySelectorAll('.badge')).map(function (b) { return b.textContent; });
+          return r.dataset.name + (r.classList.contains('is-active') ? '←编辑中' : '')
+            + (r.classList.contains('is-checked') ? '✓勾选' : '')
+            + (tags.length ? '[' + tags.join('+') + ']' : '')
+            + ' · ' + ((r.querySelector('.tpl-item__desc') || {}).textContent || '');
+        }).join(' | ');
+      })(),
+      '   搜索框: 「' + ((fp.querySelector('[data-role="search"]') || {}).value || '')
+        + '」· 结果行 ' + fp.querySelectorAll('.tpl-row').length,
+      // 右键菜单。模板页和过滤页的列表都有一个，而"菜单有没有弹出来"在截图里就是一块
+      // 深色浮层，分辨不出它属于哪一行、少了哪一项。
+      '   右键菜单: ' + (function () {
+        var m = d.querySelector('[data-role="ctxmenu"]');
+        return !m || m.hidden ? '没弹'
+          : Array.from(m.querySelectorAll('[data-ctx]')).map(function (b) {
+            return b.textContent.trim();
+          }).join(' / ');
+      })(),
+      // 开关要点：排除 / 满足全部 跟着「启用」灰，含子目录不跟 —— 它管的是往下收多深，
+      // 过滤关掉时照样算数。文件那一组根本不该有含子目录。
+      '   目录规则开关: 启用 ' + swAt('dirs', 'enabled') + ' · 排除 ' + swAt('dirs', 'exclude')
+        + ' · 满足全部 ' + swAt('dirs', 'matchAll') + ' · 含子目录 ' + swAt('dirs', 'topOnly'),
+      '   文件规则开关: 启用 ' + swAt('files', 'enabled') + ' · 排除 ' + swAt('files', 'exclude')
+        + ' · 满足全部 ' + swAt('files', 'matchAll') + ' · 含子目录 ' + swAt('files', 'topOnly'),
+      groupAt('dirs'),
+      groupAt('files'),
+      // 试目录这一段**不该**跟着「启用」灰：过滤关掉之后照样要能问出"会加进来什么"。
+      '   试的目录: ' + ((fp.querySelector('[data-role="testdir"]') || {}).value || '（空）')
+        + ' · 选择按钮 ' + (function () {
+          var b = fp.querySelector('[data-act="pick-test"]');
+          return !b ? '（没有）' : b.disabled ? '灰着' : '可点';
+        })()
+        + ' · 输入框灰: ' + !!(fp.querySelector('[data-role="testdir"]') || {}).disabled,
+      '   结果: ' + (scan ? (function () {
+        var el = scan.querySelector('.fscan__head') || scan.querySelector('.fscan__empty');
+        return el ? el.textContent.trim().replace(/\s+/g, ' ') : '（还没有结果）';
+      })() : '（没有结果区）'),
+      '   列出的目录: ' + (scan ? Array.from(scan.querySelectorAll('.fscan__item .fscan__name'))
+        .slice(0, 6).map(function (n) { return n.textContent; }).join(' | ') : '—'),
+      '   错误: ' + (scan ? ((scan.querySelector('.fscan__err') || {}).textContent || '（无）') : '—'),
+      // 压暗是打字时的临时态。它要是留在屏幕上，结果区看起来永远是"还在查"，而截图
+      // 分辨不出 45% 透明和正常。
+      '   结果区: ' + (scan && scan.classList.contains('is-stale') ? '压暗中（还是上一次的结果）' : '当前'),
+      '   页脚: 状态「' + ((fp.querySelector('[data-role="status"]') || {}).textContent || '') + '」'
+        + ' · 保存 ' + (function () {
+          var b = fp.querySelector('[data-act="save"]');
+          return !b ? '（没有）' : b.disabled ? '灰着' : '可点';
+        })()
+        + ' · 另存为 ' + (function () {
+          var b = fp.querySelector('[data-act="save-as"]');
+          return !b ? '（没有）' : b.disabled ? '灰着' : '可点';
+        })()
+        + ' · 删除 ' + (function () {
+          var b = fp.querySelector('[data-act="drop-profile"]');
+          return !b ? '（没有）' : b.disabled ? '灰着' : '可点';
+        })(),
+      // 方案名称和说明在右侧「基本信息」里就地编辑，所以这两格的内容才是"这套叫什么"。
+      // 判据是 `.modal-root` 有没有 `is-open` —— 起名那个弹窗已经没有了，框关掉之后
+      // 那个节点还留在 DOM 里，只是不再显示，报"没弹"才对。
+      '   基本信息: 名称「' + ((fp.querySelector('[data-role="pname"]') || {}).value || '（没有这一项）')
+        + '」· 说明「' + ((fp.querySelector('[data-role="pdesc"]') || {}).value || '')
+        + '」· 弹窗 ' + (d.querySelector('.modal-root.is-open') ? '开着' : '关着'),
+    ].join('\n') : '   （这一页不是「过滤」页）';
+
     // The app no longer prints a page title anywhere -- the rail's active item is the
     // only place the page is named -- so that label is what identifies where we landed.
     var active = d.querySelector('.rail__item.is-active');
     var label = active ? (active.textContent || '').trim() : '?';
-    d.body.innerHTML = '<pre>url: ' + location.search + '\n' +
+    var text = 'url: ' + location.search + '\n' +
       'landed on: page=' + (active ? active.dataset.page : '?')
       + ' label=' + label + '\n' +
       'mock active: ' + (typeof d.defaultView.go === 'undefined' ? 'yes (no window.go)' : 'no, real bindings') + '\n\n' +
       'matches in the app document:\n' + lines.join('\n')
-      + '\n\nselect options (value list → current):\n' + selLines.join('\n') + '</pre>';
+      + '\n\n分页条:\n' + pagerLines
+      + '\n\n定位:\n' + locateLines
+      + '\n\n工具栏方案下拉:\n' + chipLines
+      + '\n\n「过滤」页:\n' + scanLines
+      + '\n\nselect options (value list → current):\n' + selLines.join('\n')
+      // 驱动漏点的选择器要一并报出来：漏点之后探针量到的是「上一次的状态」，
+      // 数字看着正常，结论却是错的。
+      + ((document.getElementById('drivelog') || {}).textContent
+        ? '\n\n驱动漏点:\n' + document.getElementById('drivelog').textContent : '');
+    d.body.innerHTML = '<pre>' + text + '</pre>';
+    // 也写一份到父文档。--dump-dom 只序列化当前文档，iframe 里的内容一个字都
+    // 不会出现 —— 之前探针结果只在 d.body 里，dump 出来永远是「什么都看不到」。
+    out(text);
   }
 
   setTimeout(() => {
@@ -135,19 +502,109 @@ f.addEventListener('load', function () {
             const s = d.querySelector(p.get('scroll'));
             if (s) s.scrollTop = Number(p.get('to') || 1200);
           }
-          if (p.get('probe')) { probe(); return; }
-          // Record where we actually ended up. Without this a selector that
-          // silently misses still yields a screenshot -- of the wrong page.
-          var active = d.querySelector('.rail__item.is-active');
-          var log = document.getElementById('drivelog') || (function () {
-            const pre = document.createElement('pre');
-            pre.id = 'drivelog';
-            pre.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9;font-size:10px;color:#0f0;background:#000';
-            document.body.appendChild(pre);
-            return pre;
-          })();
-          log.textContent = 'page=' + (active ? active.dataset.page : '?')
-            + ' label=' + (active ? (active.textContent || '').trim() : '?');
+          // set=sel@value~sel@value: 给下拉框 / 输入框设值并派发 change。放在 acts
+          // 之前，这样「先筛选、再翻页」这种顺序也测得到。先赋值再派发事件 ——
+          // 很多联动逻辑会在 change 里读值。
+          (p.get('set') || '').split('~').filter(Boolean).forEach((pair) => {
+            const at = pair.lastIndexOf('@');
+            const talk = pair.slice(0, at);
+            const target = d.querySelector(talk);
+            if (!target) { miss(talk); return; }
+            target.value = pair.slice(at + 1);
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          // acts=sel1~sel2~sel3: 依次点击，每次之间留 500ms —— 翻页、筛选都要等
+          // 后端回复（mock 是 promise）之后才知道画成什么样。虚拟时间会快进这些
+          // 定时器，所以不会拖慢截图。选择器里的空格用 %20 编码即可。
+          // 一步也可以是 `right:sel`（右键，见 rightClick 处的说明）、
+          // `ctrl:sel` 或 `shift:sel`（带修饰键的单击，列表多选靠的就是这两个键）。
+          //
+          // 一步也可以写成 `type:sel@text` 或 `set:sel@text`：前者的场景是"打字 —
+          // 保存"这种顺序，而 type=/set= 两个参数只能整体排在 acts 之前或之后，中间
+          // 那一步就够不着。`type:` 派发 input，`set:` 派发 change（同两个参数）。
+          // `right:sel` 派发 contextmenu：行右键菜单要等一个微任务才画出来，而 click()
+          // 只点得到左键 —— 没有这一步，"右键有没有菜单"只能靠截图猜。
+          const applyValue = (talk, value, ev) => {
+            const target = d.querySelector(talk);
+            if (!target) { miss(talk); return; }
+            target.value = value;
+            target.dispatchEvent(new Event(ev, { bubbles: true }));
+          };
+          const rightClick = (talk) => {
+            const target = d.querySelector(talk);
+            if (!target) { miss(talk); return; }
+            target.dispatchEvent(new MouseEvent('contextmenu', {
+              bubbles: true, clientX: 240, clientY: 240,
+            }));
+          };
+          const applyType = () => {
+            (p.get('type') || '').split('~').filter(Boolean).forEach((pair) => {
+              const at = pair.lastIndexOf('@');
+              applyValue(pair.slice(0, at), pair.slice(at + 1), 'input');
+            });
+          };
+          const acts = (p.get('acts') || '').split('~').filter(Boolean);
+          const step = (i) => {
+            // 每一步都自己兜住：抛出来就没人接了（这层跑在 setTimeout 里），链条停在
+            // 半路、dump 里连 #probeout 都没有，"哪一步断的"只能靠二分去猜。
+            try {
+              if (i < acts.length) {
+                const a = acts[i];
+                if (a.startsWith('type:') || a.startsWith('set:') || a.startsWith('right:')
+                  || a.startsWith('ctrl:') || a.startsWith('shift:')) {
+                  // 按冒号切，不要写死前缀长度：`type:` 是 5 个字符而 `set:` 是 4 个，
+                  // 一个写死的长度必然对其中一个多切一个字符 —— 正好把选择器开头的
+                  // `.` 吃掉，而 `fscan [...]` 是合法的选择器（标签名），于是它不报错，
+                  // 只是永远查不到东西（报出来的选择器会以 `:` 开头，一眼能认出来）。
+                  const body = a.slice(a.indexOf(':') + 1);
+                  if (a.startsWith('right:')) {
+                    rightClick(body);
+                  } else if (a.startsWith('ctrl:') || a.startsWith('shift:')) {
+                    click(body, { ctrl: a.startsWith('ctrl:'), shift: a.startsWith('shift:') });
+                  } else {
+                    const at = body.lastIndexOf('@');
+                    applyValue(body.slice(0, at), body.slice(at + 1), a.startsWith('type:') ? 'input' : 'change');
+                  }
+                } else {
+                  click(a);
+                }
+                return setTimeout(() => step(i + 1), 500);
+              }
+              // 收尾也要等一拍：`set` 走的是 change → 重新取数，回复还没到就探针的话，
+              // 量到的是改之前的那一屏，数字看着正常、结论是错的。
+              return setTimeout(() => {
+                try {
+                  applyType();
+                  // 打的字之后还要再等：输入框上的防抖（过滤面板是 180ms）和它后面那次
+                  // 取数都得先落地，否则量到的还是打之前的那一屏。
+                  return setTimeout(() => {
+                    if (p.get('probe')) { probe(); return; }
+                    if (p.get('expr')) { runExpr(p.get('expr')); return; }
+                    return afterActs();
+                  }, p.get('type') ? 600 : 0);
+                } catch (e) {
+                  fail('probe', e);
+                }
+              }, acts.length || p.get('set') ? 500 : 0);
+            } catch (e) {
+              fail('act ' + i + ' (' + acts[i] + ')', e);
+            }
+          };
+          const afterActs = () => {
+            // Record where we actually ended up. Without this a selector that
+            // silently misses still yields a screenshot -- of the wrong page.
+            var active = d.querySelector('.rail__item.is-active');
+            var log = document.getElementById('drivelog') || (function () {
+              const pre = document.createElement('pre');
+              pre.id = 'drivelog';
+              pre.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9;font-size:10px;color:#0f0;background:#000';
+              document.body.appendChild(pre);
+              return pre;
+            })();
+            log.textContent = 'page=' + (active ? active.dataset.page : '?')
+              + ' label=' + (active ? (active.textContent || '').trim() : '?');
+          };
+          step(0);
         }, 600);
       }, 900);
     }, 900);

@@ -50,6 +50,14 @@ export function DataDir() {
   return window['go']['main']['App']['DataDir']();
 }
 
+export function DeleteFilterProfile(arg1) {
+  return window['go']['main']['App']['DeleteFilterProfile'](arg1);
+}
+
+export function DeleteFilterProfiles(arg1) {
+  return window['go']['main']['App']['DeleteFilterProfiles'](arg1);
+}
+
 export function DeleteOutput(arg1) {
   return window['go']['main']['App']['DeleteOutput'](arg1);
 }
@@ -58,8 +66,16 @@ export function DeleteOutputs(arg1) {
   return window['go']['main']['App']['DeleteOutputs'](arg1);
 }
 
+export function DeleteRecords(arg1) {
+  return window['go']['main']['App']['DeleteRecords'](arg1);
+}
+
 export function DeleteTemplate(arg1) {
   return window['go']['main']['App']['DeleteTemplate'](arg1);
+}
+
+export function DeleteTemplates(arg1) {
+  return window['go']['main']['App']['DeleteTemplates'](arg1);
 }
 
 export function DetectEncoders() {
@@ -76,6 +92,10 @@ export function ExportHistoryCSV(arg1) {
 
 export function ExportTemplates() {
   return window['go']['main']['App']['ExportTemplates']();
+}
+
+export function FilterState() {
+  return window['go']['main']['App']['FilterState']();
 }
 
 export function GlobalTemplate() {
@@ -96,6 +116,10 @@ export function JobLogs(arg1) {
 
 export function Jobs() {
   return window['go']['main']['App']['Jobs']();
+}
+
+export function Locate(arg1, arg2) {
+  return window['go']['main']['App']['Locate'](arg1, arg2);
 }
 
 export function NewTemplate() {
@@ -122,8 +146,20 @@ export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
 }
 
+export function PickFile() {
+  return window['go']['main']['App']['PickFile']();
+}
+
 export function PreviewCommand(arg1, arg2) {
   return window['go']['main']['App']['PreviewCommand'](arg1, arg2);
+}
+
+export function PreviewFolderScan(arg1) {
+  return window['go']['main']['App']['PreviewFolderScan'](arg1);
+}
+
+export function PreviewPaths(arg1, arg2) {
+  return window['go']['main']['App']['PreviewPaths'](arg1, arg2);
 }
 
 export function PreviewTemplate(arg1, arg2) {
@@ -174,6 +210,10 @@ export function RevealPath(arg1) {
   return window['go']['main']['App']['RevealPath'](arg1);
 }
 
+export function SaveFilterProfile(arg1, arg2) {
+  return window['go']['main']['App']['SaveFilterProfile'](arg1, arg2);
+}
+
 export function SaveGlobalTemplate(arg1) {
   return window['go']['main']['App']['SaveGlobalTemplate'](arg1);
 }
@@ -184,6 +224,10 @@ export function SaveSettings(arg1) {
 
 export function SaveTemplate(arg1) {
   return window['go']['main']['App']['SaveTemplate'](arg1);
+}
+
+export function SetActiveFilter(arg1, arg2) {
+  return window['go']['main']['App']['SetActiveFilter'](arg1, arg2);
 }
 
 export function SetAllTemplates(arg1) {

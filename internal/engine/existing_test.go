@@ -279,24 +279,33 @@ func TestHandleProcessedNilSection(t *testing.T) {
 // moves. move takes it away; copy leaves it to be overwritten.
 func TestHandleProcessedRelocatesSource(t *testing.T) {
 	cases := []struct {
+		name   string
 		action string
-		// suffix is what the rule appends; "" means "mirror into dir"
-		suffix string
-		// mirror sends the whole tree into one directory instead
-		mirror bool
+		spec   store.DirSpec
 		// whether the original path must still exist afterwards
 		orig bool
+		// where the file has to end up, given the temporary root
+		want func(root string) string
 	}{
-		{action: store.ActionMove, suffix: "_done"},
-		{action: store.ActionCopy, suffix: "_done", orig: true},
-		{action: store.ActionMove, mirror: true},
+		{
+			name: "移动/保留目录结构", action: store.ActionMove,
+			spec: siblingDone(true),
+			want: func(root string) string { return filepath.Join(root+"_done", "sub", "b.mp4") },
+		},
+		{
+			name: "复制/保留目录结构", action: store.ActionCopy,
+			spec: siblingDone(true), orig: true,
+			want: func(root string) string { return filepath.Join(root+"_done", "sub", "b.mp4") },
+		},
+		// 关掉「保留目录结构」子目录就贴平：整棵树的文件汇到同一个 _done 里。
+		{
+			name: "移动/不保留目录结构", action: store.ActionMove,
+			spec: siblingDone(false),
+			want: func(root string) string { return filepath.Join(root+"_done", "b.mp4") },
+		},
 	}
 	for _, tc := range cases {
-		name := tc.action + "/sibling"
-		if tc.mirror {
-			name = tc.action + "/mirror"
-		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			// mmd/sub/b.mp4 was already processed, so its result is sitting in
 			// the source tree's own output folder.
 			root := t.TempDir()
@@ -305,18 +314,15 @@ func TestHandleProcessedRelocatesSource(t *testing.T) {
 			writeFile(t, src, "source")
 			writeFile(t, out, "old result")
 
-			rule := store.DestRule{Mode: store.OutputSibling, Suffix: tc.suffix}
-			archived := root + "_done" + string(filepath.Separator) + filepath.Join("sub", "b.mp4")
-			if tc.mirror {
-				dir := filepath.Join(t.TempDir(), "done")
-				rule = store.DestRule{Mode: store.OutputMirror, Dir: dir}
-				archived = filepath.Join(dir, "sub", "b.mp4")
-			}
+			archived := tc.want(root)
 
 			r, job := newPolicyRunner(t, src, root)
 			r.noteProcessed(src, job.TemplateID)
 			tpl := store.Template{
-				Existing: &store.ExistingSpec{Action: tc.action, Dest: rule},
+				Existing: &store.ExistingSpec{
+					Action: tc.action,
+					Dir:    tc.spec,
+				},
 			}
 			if stop := r.handleProcessed(job, store.Settings{}, tpl, out); !stop {
 				t.Fatalf("%q must end the job", tc.action)
@@ -329,6 +335,16 @@ func TestHandleProcessedRelocatesSource(t *testing.T) {
 			}
 			if !existsAt(t, archived) {
 				t.Fatalf("the source was not relocated to %s", archived)
+			}
+			// 移动之后 Input 那个路径在磁盘上就不存在了，所以落点必须记在行上，
+			// 否则「定位源文件」只能去一个空路径上找。复制不记：原文件还在，指向
+			// 副本会把人送到另一个文件上。
+			wantMoved := ""
+			if tc.action == store.ActionMove {
+				wantMoved = archived
+			}
+			if job.SourceMovedTo != wantMoved {
+				t.Errorf("SourceMovedTo = %q, want %q", job.SourceMovedTo, wantMoved)
 			}
 			if body, _ := os.ReadFile(archived); string(body) != "source" {
 				t.Errorf("relocated contents = %q, want %q", body, "source")
@@ -354,7 +370,7 @@ func TestHandleProcessedRenameTemplate(t *testing.T) {
 	r.noteProcessed(src, job.TemplateID)
 	tpl := store.Template{Existing: &store.ExistingSpec{
 		Action:  store.ActionMove,
-		Dest:    store.DestRule{Mode: store.OutputSibling, Suffix: "_done"},
+		Dir:     siblingDone(true),
 		Pattern: "{name}_v1.{ext}",
 	}}
 	if stop := r.handleProcessed(job, store.Settings{}, tpl, out); !stop {
@@ -362,6 +378,81 @@ func TestHandleProcessedRenameTemplate(t *testing.T) {
 	}
 	if !existsAt(t, root+"_done"+string(filepath.Separator)+"b_v1.mp4") {
 		t.Errorf("the rename template was not applied; got %v", job.Warnings)
+	}
+}
+
+// 「定位源文件」 has to keep working after the source has been filed away, so the
+// destination is written on the job at the moment it is moved.
+//
+// This is the finish path: the encode already succeeded and this step only files
+// the source, which is the half that runs on a first pass. The skip path is
+// covered by TestHandleProcessedRelocatesSource.
+func TestFileProcessedSourceRemembersWhereItMoved(t *testing.T) {
+	cases := []struct {
+		action string
+		want   bool // 源文件是否应当记住落点
+	}{
+		{action: store.ActionMove, want: true},
+		{action: store.ActionCopy},
+		{action: store.ActionKeep},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			root := t.TempDir()
+			src := filepath.Join(root, "sub", "b.mp4")
+			done := filepath.Join(t.TempDir(), "done")
+			writeFile(t, src, "source")
+			archived := filepath.Join(done, "sub", "b.mp4")
+
+			r, job := newPolicyRunner(t, src, root)
+			tpl := store.Template{Existing: &store.ExistingSpec{
+				Action: tc.action,
+				Dir:    store.DirSpec{Mode: store.OutputCustom, Dir: done, KeepTree: true},
+			}}
+			r.fileProcessedSource(job, store.Settings{}, tpl)
+
+			if tc.want {
+				if job.SourceMovedTo != archived {
+					t.Errorf("SourceMovedTo = %q, want %q", job.SourceMovedTo, archived)
+				}
+				if !existsAt(t, archived) {
+					t.Errorf("the source was not filed to %s", archived)
+				}
+				if existsAt(t, src) {
+					t.Error("移动之后原路径不该还在")
+				}
+				return
+			}
+			// 复制留下原文件、不处理什么都不动：两种情况都不该记落点，
+			// 否则「定位源文件」会指向副本，而原文件才是那个源文件。
+			if job.SourceMovedTo != "" {
+				t.Errorf("SourceMovedTo = %q, want empty", job.SourceMovedTo)
+			}
+		})
+	}
+}
+
+// 只有真的搬走才记落点，而且只有这一个写入口 —— 「已处理过的文件」和筛选规则都
+// 从这里过。复制把原件留在原处，再指一个副本就是把人送到错的那个文件上。
+func TestMarkSourceMovedOnlyRemembersAMove(t *testing.T) {
+	cases := []struct {
+		name         string
+		action, dest string
+		want         string
+	}{
+		{name: "移动", action: store.ActionMove, dest: `D:\done\x.mp4`, want: `D:\done\x.mp4`},
+		{name: "复制", action: store.ActionCopy, dest: `D:\done\x.mp4`},
+		{name: "留在原处", action: store.ActionKeep, dest: `D:\done\x.mp4`},
+		{name: "说要移动但没落到任何地方", action: store.ActionMove},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := &Job{Input: `D:\a\x.mp4`}
+			(&Runner{}).markSourceMoved(job, tc.action, tc.dest)
+			if job.SourceMovedTo != tc.want {
+				t.Errorf("SourceMovedTo = %q, want %q", job.SourceMovedTo, tc.want)
+			}
+		})
 	}
 }
 
@@ -374,7 +465,7 @@ func TestHandleProcessedRelocationDoesNotClobber(t *testing.T) {
 	out := filepath.Join(root, "out", "b.mp4")
 	tpl := store.Template{Existing: &store.ExistingSpec{
 		Action: store.ActionMove,
-		Dest:   store.DestRule{Mode: store.OutputSibling, Suffix: "_done"},
+		Dir:    siblingDone(true),
 	}}
 	first := root + "_done" + string(filepath.Separator) + "b.mp4"
 
@@ -395,9 +486,11 @@ func TestHandleProcessedRelocationDoesNotClobber(t *testing.T) {
 	}
 }
 
-// A relocation with nowhere to go fails the job and leaves the source alone --
-// silently skipping would look like the policy worked.
-func TestHandleProcessedWithoutDirFails(t *testing.T) {
+// A blank directory expression means "where the file already is", so a rule the
+// user left empty cannot fail a job: the file is skipped as already processed and
+// nothing moves. There is no longer such a thing as an unusable destination --
+// every expression has a meaning, and this is the one that means "here".
+func TestHandleProcessedBlankDirKeepsSource(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "b.mp4")
 	out := filepath.Join(root, "out", "b.mp4")
@@ -406,20 +499,23 @@ func TestHandleProcessedWithoutDirFails(t *testing.T) {
 
 	r, job := newPolicyRunner(t, src, root)
 	r.noteProcessed(src, job.TemplateID)
-	// mirror without a directory is a misconfiguration: Validate rejects it, but
-	// a hand-edited template can still arrive here.
-	tpl := store.Template{Existing: &store.ExistingSpec{
-		Action: store.ActionMove,
-		Dest:   store.DestRule{Mode: store.OutputMirror},
-	}}
+	tpl := store.Template{Existing: &store.ExistingSpec{Action: store.ActionMove}}
 	if stop := r.handleProcessed(job, store.Settings{}, tpl, out); !stop {
-		t.Fatal("an unusable destination must end the job")
+		t.Fatal("an already-processed file must end the job either way")
 	}
-	if job.Status != StatusFailed || job.Error == "" {
-		t.Errorf("expected a failure with a reason, got %q / %q", job.Status, job.Error)
+	if job.Status != StatusSkipped {
+		t.Errorf("status = %q, want %q", job.Status, StatusSkipped)
 	}
 	if !existsAt(t, src) {
-		t.Error("the source must be left alone when it cannot be relocated")
+		t.Error("a blank destination must leave the source where it is")
+	}
+	if job.SourceMovedTo != "" {
+		t.Errorf("SourceMovedTo = %q, want empty", job.SourceMovedTo)
+	}
+	// 落点就是源文件本身时不许走查重那一支：文件没去别处，名字却变成 b_1.mp4
+	// 的话，整批看上去都像被搬过。
+	if existsAt(t, filepath.Join(root, "b_1.mp4")) {
+		t.Error("the file was renamed instead of left alone")
 	}
 }
 
@@ -437,7 +533,7 @@ func TestFileProcessedSourceMovesOnFirstPass(t *testing.T) {
 			r, job := newPolicyRunner(t, src, root)
 			tpl := store.Template{Name: "模板", Existing: &store.ExistingSpec{
 				Action: action,
-				Dest:   store.DestRule{Mode: store.OutputSibling, Suffix: "_done"},
+				Dir:    siblingDone(true),
 			}}
 			r.fileProcessedSource(job, store.Settings{}, tpl)
 
@@ -483,10 +579,9 @@ func TestFileProcessedSourceKeepsWhenNotAsked(t *testing.T) {
 	}
 }
 
-// A destination that cannot be used is reported on the row: the encode did work,
-// so the job stays a success, but the user asked for the source to be filed away
-// and it was not.
-func TestFileProcessedSourceWarnsOnBadDestination(t *testing.T) {
+// 留空 = 源文件所在目录，没有任何东西要搬，也不该在行上报一句警告：
+// 编码是成功的，而"没搬"正是这条规则当下唯一的意思。
+func TestFileProcessedSourceBlankDirIsSilent(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "b.mp4")
 	writeFile(t, src, "source")
@@ -494,15 +589,17 @@ func TestFileProcessedSourceWarnsOnBadDestination(t *testing.T) {
 	r, job := newPolicyRunner(t, src, root)
 	tpl := store.Template{Name: "模板", Existing: &store.ExistingSpec{
 		Action: store.ActionMove,
-		Dest:   store.DestRule{Mode: store.OutputMirror}, // no directory
 	}}
 	r.fileProcessedSource(job, store.Settings{}, tpl)
 
 	if !existsAt(t, src) {
-		t.Error("the source must be left alone when it cannot be relocated")
+		t.Error("the source must stay where it is")
 	}
-	if len(job.Warnings) == 0 {
-		t.Error("a source that could not be filed away has to be reported")
+	if len(job.Warnings) != 0 {
+		t.Errorf("a no-op must not warn: %v", job.Warnings)
+	}
+	if job.SourceMovedTo != "" {
+		t.Errorf("SourceMovedTo = %q, want empty", job.SourceMovedTo)
 	}
 }
 
@@ -520,8 +617,8 @@ func TestResolveOutputKeepsOccupiedPath(t *testing.T) {
 	got, err := ResolveOutput(OutputRequest{
 		Info: &media.Info{Path: src, Ext: "mp4"},
 		Tpl: store.Template{
-			OutMode:  store.OutputSibling,
-			Existing: &store.ExistingSpec{Action: store.ActionMove},
+			OutDirSpec: siblingOut(true),
+			Existing:   &store.ExistingSpec{Action: store.ActionMove},
 		},
 		SrcRoot: dir,
 	})
@@ -551,8 +648,8 @@ func TestExistingSectionMovesSourceOnFirstPass(t *testing.T) {
 	if err := os.MkdirAll(inDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The source lives one level down so the "同级目录 + 后缀" rule has a root to
-	// work from, and the archive directory is given explicitly.
+	// The source lives one level down so the sub-directory half of the rule has
+	// something to rebuild, and the archive directory is given explicitly.
 	src := filepath.Join(inDir, "clip.mp4")
 	makeClip(t, bins, src, 320, 180, 1, "120k")
 
@@ -560,7 +657,7 @@ func TestExistingSectionMovesSourceOnFirstPass(t *testing.T) {
 	settings.PreventSleep = false
 
 	global := store.DefaultGlobalTemplate()
-	global.OutMode = store.OutputSibling
+	global.OutDirSpec = siblingOut(true)
 	global.Perf.Concurrency = 1
 	global.Perf.LogLevel = "warning"
 
@@ -569,7 +666,7 @@ func TestExistingSectionMovesSourceOnFirstPass(t *testing.T) {
 		VideoMode: store.ModeCopy, AudioMode: store.ModeCopy,
 		Existing: &store.ExistingSpec{
 			Action: store.ActionMove,
-			Dest:   store.DestRule{Mode: store.OutputCustom, Dir: doneDir},
+			Dir:    store.DirSpec{Mode: store.OutputCustom, Dir: doneDir},
 		},
 	}
 	tpl.Normalize()
@@ -647,12 +744,14 @@ func TestOutputRootMatchesResolveOutput(t *testing.T) {
 	src := filepath.Join(root, "sub", "b.mp4")
 	info := &media.Info{Path: src, Ext: "mp4"}
 
-	for _, mode := range []string{store.OutputSame, store.OutputSibling, store.OutputMirror} {
+	for _, spec := range []store.DirSpec{
+		{},
+		siblingOut(true),
+		{Mode: store.OutputCustom, Dir: filepath.Join("D:", "out"), KeepTree: true},
+		{Mode: store.OutputCustom, Dir: filepath.Join("D:", "flat")},
+	} {
 		g := store.DefaultGlobalTemplate()
-		g.OutMode = mode
-		if mode == store.OutputMirror {
-			g.OutDir = filepath.Join("D:", "out")
-		}
+		g.OutDirSpec = spec
 		eff := store.Template{}.Effective(g)
 		req := OutputRequest{Info: info, Tpl: eff, SrcRoot: root}
 
@@ -665,7 +764,7 @@ func TestOutputRootMatchesResolveOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 		if filepath.Dir(out) != root1 {
-			t.Errorf("%s: ResolveOutput wrote to %s but OutputRoot said %s", mode, filepath.Dir(out), root1)
+			t.Errorf("%+v: ResolveOutput wrote to %s but OutputRoot said %s", spec, filepath.Dir(out), root1)
 		}
 	}
 }

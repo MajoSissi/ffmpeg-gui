@@ -32,6 +32,104 @@ export namespace engine {
 	        this.errors = source["errors"];
 	    }
 	}
+	export class DirMatch {
+	    dir: string;
+	    name: string;
+	    rel: string;
+	    files: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DirMatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.name = source["name"];
+	        this.rel = source["rel"];
+	        this.files = source["files"];
+	    }
+	}
+	export class FolderPreview {
+	    root: string;
+	    filtering: boolean;
+	    exclude: boolean;
+	    dirs: DirMatch[];
+	    dirsTotal: number;
+	    totalFiles: number;
+	    filteredFiles: number;
+	    scanned: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FolderPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.root = source["root"];
+	        this.filtering = source["filtering"];
+	        this.exclude = source["exclude"];
+	        this.dirs = this.convertValues(source["dirs"], DirMatch);
+	        this.dirsTotal = source["dirsTotal"];
+	        this.totalFiles = source["totalFiles"];
+	        this.filteredFiles = source["filteredFiles"];
+	        this.scanned = source["scanned"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class FolderScan {
+	    dir: string;
+	    dirs: store.NameRules;
+	    files: store.NameRules;
+	    recursive: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FolderScan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.dirs = this.convertValues(source["dirs"], store.NameRules);
+	        this.files = this.convertValues(source["files"], store.NameRules);
+	        this.recursive = source["recursive"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Job {
 	    id: string;
 	    input: string;
@@ -72,6 +170,7 @@ export namespace engine {
 	    logTail: string[];
 	    logLineCount: number;
 	    outputDeleted: boolean;
+	    sourceMovedTo: string;
 	    recordId: string;
 	
 	    static createFrom(source: any = {}) {
@@ -116,6 +215,7 @@ export namespace engine {
 	        this.logTail = source["logTail"];
 	        this.logLineCount = source["logLineCount"];
 	        this.outputDeleted = source["outputDeleted"];
+	        this.sourceMovedTo = source["sourceMovedTo"];
 	        this.recordId = source["recordId"];
 	    }
 	
@@ -242,11 +342,11 @@ export namespace main {
 	    logLevels: Option[];
 	    rateControls: Option[];
 	    padColors: Option[];
-	    outputModes: Option[];
+	    destModes: Option[];
+	    defaultOutputSuffix: string;
 	    filterActions: Option[];
 	    problemActions: Option[];
 	    existingActions: Option[];
-	    destModes: Option[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Options(source);
@@ -263,11 +363,47 @@ export namespace main {
 	        this.logLevels = this.convertValues(source["logLevels"], Option);
 	        this.rateControls = this.convertValues(source["rateControls"], Option);
 	        this.padColors = this.convertValues(source["padColors"], Option);
-	        this.outputModes = this.convertValues(source["outputModes"], Option);
+	        this.destModes = this.convertValues(source["destModes"], Option);
+	        this.defaultOutputSuffix = source["defaultOutputSuffix"];
 	        this.filterActions = this.convertValues(source["filterActions"], Option);
 	        this.problemActions = this.convertValues(source["problemActions"], Option);
 	        this.existingActions = this.convertValues(source["existingActions"], Option);
-	        this.destModes = this.convertValues(source["destModes"], Option);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class FilterState {
+	    profiles: store.FilterProfile[];
+	    active: string;
+	    off: boolean;
+	    profile: store.FilterProfile;
+	
+	    static createFrom(source: any = {}) {
+	        return new FilterState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.profiles = this.convertValues(source["profiles"], store.FilterProfile);
+	        this.active = source["active"];
+	        this.off = source["off"];
+	        this.profile = this.convertValues(source["profile"], store.FilterProfile);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -335,6 +471,7 @@ export namespace main {
 	export class Bootstrap {
 	    runtime: RuntimeInfo;
 	    settings: store.Settings;
+	    filter: FilterState;
 	    templates: store.Template[];
 	    jobs: engine.Job[];
 	    stats: engine.Stats;
@@ -349,6 +486,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.runtime = this.convertValues(source["runtime"], RuntimeInfo);
 	        this.settings = this.convertValues(source["settings"], store.Settings);
+	        this.filter = this.convertValues(source["filter"], FilterState);
 	        this.templates = this.convertValues(source["templates"], store.Template);
 	        this.jobs = this.convertValues(source["jobs"], engine.Job);
 	        this.stats = this.convertValues(source["stats"], engine.Stats);
@@ -390,6 +528,7 @@ export namespace main {
 	        this.ok = source["ok"];
 	    }
 	}
+	
 	export class HistoryPage {
 	    total: number;
 	    items: store.Record[];
@@ -425,6 +564,9 @@ export namespace main {
 	export class HistoryQuery {
 	    keyword: string;
 	    status: string;
+	    from: string;
+	    to: string;
+	    sort: string;
 	    offset: number;
 	    limit: number;
 	
@@ -436,12 +578,47 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.keyword = source["keyword"];
 	        this.status = source["status"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.sort = source["sort"];
 	        this.offset = source["offset"];
 	        this.limit = source["limit"];
 	    }
 	}
+	export class LocatedFile {
+	    path: string;
+	    moved: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocatedFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.moved = source["moved"];
+	    }
+	}
 	
 	
+	export class PathCheck {
+	    srcDir: string;
+	    outputDir: string;
+	    outputPath: string;
+	    notices?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PathCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.srcDir = source["srcDir"];
+	        this.outputDir = source["outputDir"];
+	        this.outputPath = source["outputPath"];
+	        this.notices = source["notices"];
+	    }
+	}
 
 }
 
@@ -627,25 +804,81 @@ export namespace store {
 	        this.enabled = source["enabled"];
 	    }
 	}
-	export class DestRule {
+	export class NameFilter {
 	    mode: string;
-	    dir: string;
-	    suffix: string;
+	    value: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new DestRule(source);
+	        return new NameFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.value = source["value"];
+	    }
+	}
+	export class DirFilter {
+	    enabled: boolean;
+	    filters: NameFilter[];
+	    matchAll: boolean;
+	    exclude: boolean;
+	    topOnly: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DirFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.filters = this.convertValues(source["filters"], NameFilter);
+	        this.matchAll = source["matchAll"];
+	        this.exclude = source["exclude"];
+	        this.topOnly = source["topOnly"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DirSpec {
+	    mode: string;
+	    dir: string;
+	    prefix: string;
+	    suffix: string;
+	    keepTree: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DirSpec(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
 	        this.dir = source["dir"];
+	        this.prefix = source["prefix"];
 	        this.suffix = source["suffix"];
+	        this.keepTree = source["keepTree"];
 	    }
 	}
 	export class ExistingSpec {
 	    action: string;
-	    dest: DestRule;
+	    dir: DirSpec;
 	    pattern?: string;
 	    overwrite: boolean;
 	
@@ -656,9 +889,81 @@ export namespace store {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.action = source["action"];
-	        this.dest = this.convertValues(source["dest"], DestRule);
+	        this.dir = this.convertValues(source["dir"], DirSpec);
 	        this.pattern = source["pattern"];
 	        this.overwrite = source["overwrite"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class NameRules {
+	    enabled: boolean;
+	    filters: NameFilter[];
+	    matchAll: boolean;
+	    exclude: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NameRules(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.filters = this.convertValues(source["filters"], NameFilter);
+	        this.matchAll = source["matchAll"];
+	        this.exclude = source["exclude"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class FilterProfile {
+	    name: string;
+	    description: string;
+	    dirs: DirFilter;
+	    files: NameRules;
+	
+	    static createFrom(source: any = {}) {
+	        return new FilterProfile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.dirs = this.convertValues(source["dirs"], DirFilter);
+	        this.files = this.convertValues(source["files"], NameRules);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -689,7 +994,7 @@ export namespace store {
 	    includeExts: string[];
 	    excludeExts: string[];
 	    action: string;
-	    dest: DestRule;
+	    dir: DirSpec;
 	    renamePattern: string;
 	    overwrite: boolean;
 	
@@ -708,7 +1013,7 @@ export namespace store {
 	        this.includeExts = source["includeExts"];
 	        this.excludeExts = source["excludeExts"];
 	        this.action = source["action"];
-	        this.dest = this.convertValues(source["dest"], DestRule);
+	        this.dir = this.convertValues(source["dir"], DirSpec);
 	        this.renamePattern = source["renamePattern"];
 	        this.overwrite = source["overwrite"];
 	    }
@@ -769,6 +1074,8 @@ export namespace store {
 	        this.bitRate = source["bitRate"];
 	    }
 	}
+	
+	
 	export class PerfSpec {
 	    concurrency: number;
 	    logLevel: string;
@@ -793,10 +1100,10 @@ export namespace store {
 	}
 	export class ProblemSpec {
 	    errorAction: string;
-	    errorDest: DestRule;
+	    errorDir: DirSpec;
 	    errorPattern?: string;
 	    warningAction: string;
-	    warningDest: DestRule;
+	    warningDir: DirSpec;
 	    warningPattern?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -806,10 +1113,10 @@ export namespace store {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.errorAction = source["errorAction"];
-	        this.errorDest = this.convertValues(source["errorDest"], DestRule);
+	        this.errorDir = this.convertValues(source["errorDir"], DirSpec);
 	        this.errorPattern = source["errorPattern"];
 	        this.warningAction = source["warningAction"];
-	        this.warningDest = this.convertValues(source["warningDest"], DestRule);
+	        this.warningDir = this.convertValues(source["warningDir"], DirSpec);
 	        this.warningPattern = source["warningPattern"];
 	    }
 	
@@ -836,6 +1143,7 @@ export namespace store {
 	    input: string;
 	    output: string;
 	    templateId: string;
+	    sourceMovedTo: string;
 	    templateName: string;
 	    command: string;
 	    status: string;
@@ -861,6 +1169,7 @@ export namespace store {
 	        this.input = source["input"];
 	        this.output = source["output"];
 	        this.templateId = source["templateId"];
+	        this.sourceMovedTo = source["sourceMovedTo"];
 	        this.templateName = source["templateName"];
 	        this.command = source["command"];
 	        this.status = source["status"];
@@ -944,6 +1253,8 @@ export namespace store {
 	    saveRunLog: boolean;
 	    logMaxSizeMB: number;
 	    logKeepDays: number;
+	    filterProfiles: FilterProfile[];
+	    activeFilter: string;
 	    lastTemplateId: string;
 	    showLogPanel: boolean;
 	    logDir: string;
@@ -970,12 +1281,32 @@ export namespace store {
 	        this.saveRunLog = source["saveRunLog"];
 	        this.logMaxSizeMB = source["logMaxSizeMB"];
 	        this.logKeepDays = source["logKeepDays"];
+	        this.filterProfiles = this.convertValues(source["filterProfiles"], FilterProfile);
+	        this.activeFilter = source["activeFilter"];
 	        this.lastTemplateId = source["lastTemplateId"];
 	        this.showLogPanel = source["showLogPanel"];
 	        this.logDir = source["logDir"];
 	        this.logPanelHeight = source["logPanelHeight"];
 	        this.logPanelSized = source["logPanelSized"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Template {
 	    id: string;
@@ -983,7 +1314,6 @@ export namespace store {
 	    description: string;
 	    builtin: boolean;
 	    global?: boolean;
-	    updatedAt: number;
 	    container: string;
 	    videoMode: string;
 	    videoCodec: string;
@@ -1004,9 +1334,7 @@ export namespace store {
 	    audioBitrate: string;
 	    audioChannels: number;
 	    sampleRate: number;
-	    outMode: string;
-	    outDir: string;
-	    outSuffix: string;
+	    outDirSpec: DirSpec;
 	    outPattern: string;
 	    outputOverride?: boolean;
 	    perf?: PerfSpec;
@@ -1035,7 +1363,6 @@ export namespace store {
 	        this.description = source["description"];
 	        this.builtin = source["builtin"];
 	        this.global = source["global"];
-	        this.updatedAt = source["updatedAt"];
 	        this.container = source["container"];
 	        this.videoMode = source["videoMode"];
 	        this.videoCodec = source["videoCodec"];
@@ -1056,9 +1383,7 @@ export namespace store {
 	        this.audioBitrate = source["audioBitrate"];
 	        this.audioChannels = source["audioChannels"];
 	        this.sampleRate = source["sampleRate"];
-	        this.outMode = source["outMode"];
-	        this.outDir = source["outDir"];
-	        this.outSuffix = source["outSuffix"];
+	        this.outDirSpec = this.convertValues(source["outDirSpec"], DirSpec);
 	        this.outPattern = source["outPattern"];
 	        this.outputOverride = source["outputOverride"];
 	        this.perf = this.convertValues(source["perf"], PerfSpec);

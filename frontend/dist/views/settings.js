@@ -1,5 +1,5 @@
 import { icon } from '../icons.js';
-import { esc, selectHtml, field, toast, confirmDialog, shellAction } from '../ui.js';
+import { esc, selectHtml, field, switchRow, toast, confirmDialog, shellAction } from '../ui.js';
 
 // Only machine-level setup and UI state live here. "输出与命名 / 处理性能 /
 // 匹配条件 / 错误与警告" moved to the template page, because they are
@@ -99,7 +99,7 @@ export function createSettingsView(ctx) {
           ${field('输出参数', `<input class="input mono" name="globalOutArgs" value="${esc(s.globalOutArgs || '')}" placeholder="-threads 0">`, '放在输出文件之前')}
         </div>
         <div style="margin-top:10px">
-          ${switchRowInline('启用硬件解码', '自动尝试 GPU 解码（-hwaccel auto）', 'hardwareDecode', s.hardwareDecode)}
+          ${switchRow('启用硬件解码', '自动尝试 GPU 解码（-hwaccel auto）', 'hardwareDecode', s.hardwareDecode)}
         </div>
       </div>
       <div class="section">
@@ -115,11 +115,11 @@ export function createSettingsView(ctx) {
       html = `
       <div class="section">
         <div class="section__head">${icon('power', 'sm')}<h3>电源与后台</h3></div>
-        ${switchRowInline('防止系统睡眠', '处理期间阻止休眠与熄屏', 'preventSleep', s.preventSleep)}
-        ${switchRowInline('启用系统托盘', '', 'enableTray', s.enableTray)}
-        ${switchRowInline('关闭窗口时最小化到托盘', '', 'closeToTray', s.closeToTray)}
-        ${switchRowInline('启动后直接最小化到托盘', '需要先启用系统托盘', 'startMinimized', s.startMinimized)}
-        ${switchRowInline('退出前二次确认', '有任务在处理时提醒一次', 'confirmExit', s.confirmExit)}
+        ${switchRow('防止系统睡眠', '处理期间阻止休眠与熄屏', 'preventSleep', s.preventSleep)}
+        ${switchRow('启用系统托盘', '', 'enableTray', s.enableTray)}
+        ${switchRow('关闭窗口时最小化到托盘', '', 'closeToTray', s.closeToTray)}
+        ${switchRow('启动后直接最小化到托盘', '需要先启用系统托盘', 'startMinimized', s.startMinimized)}
+        ${switchRow('退出前二次确认', '有任务在处理时提醒一次', 'confirmExit', s.confirmExit)}
       </div>
       <div class="section">
         <div class="section__head">${icon('info', 'sm')}<h3>运行环境</h3></div>
@@ -144,7 +144,7 @@ export function createSettingsView(ctx) {
           ${field('日志保留天数', `<input class="input" type="number" min="1" max="3650" name="logKeepDays" value="${s.logKeepDays ?? 7}">`, '')}
         </div>
         <div style="margin-top:12px">
-          ${switchRowInline('把每个任务的日志写入文件', '按任务保存到数据目录的 logs/', 'saveRunLog', s.saveRunLog)}
+          ${switchRow('把每个任务的日志写入文件', '按任务保存到数据目录的 logs/', 'saveRunLog', s.saveRunLog)}
         </div>
         <div class="hint" style="margin-top:8px">日志目录在启动时和每次任务结束后按上面两项清理。</div>
       </div>
@@ -200,13 +200,6 @@ export function createSettingsView(ctx) {
     }
     if (hint) hint.textContent = encSummary();
     if (box) box.innerHTML = encodersHtml();
-  }
-
-  function switchRowInline(title, hint, name, checked) {
-    return `<div class="switch-row">
-      <div class="switch-row__text"><b>${esc(title)}</b>${hint ? `<span>${esc(hint)}</span>` : ''}</div>
-      <label class="switch"><input type="checkbox" name="${esc(name)}"${checked ? ' checked' : ''}></label>
-    </div>`;
   }
 
   function sourceLabel(src) {

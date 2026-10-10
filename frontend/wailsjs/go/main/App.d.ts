@@ -29,11 +29,19 @@ export function ClearQueue():Promise<number>;
 
 export function DataDir():Promise<string>;
 
+export function DeleteFilterProfile(arg1:string):Promise<main.FilterState>;
+
+export function DeleteFilterProfiles(arg1:Array<string>):Promise<main.FilterState>;
+
 export function DeleteOutput(arg1:string):Promise<engine.DeleteResult>;
 
 export function DeleteOutputs(arg1:Array<string>):Promise<engine.DeleteResult>;
 
+export function DeleteRecords(arg1:Array<string>):Promise<number>;
+
 export function DeleteTemplate(arg1:string):Promise<void>;
+
+export function DeleteTemplates(arg1:Array<string>):Promise<number>;
 
 export function DetectEncoders():Promise<Array<main.EncoderSupport>>;
 
@@ -42,6 +50,8 @@ export function DuplicateTemplate(arg1:string):Promise<store.Template>;
 export function ExportHistoryCSV(arg1:main.HistoryQuery):Promise<string>;
 
 export function ExportTemplates():Promise<string>;
+
+export function FilterState():Promise<main.FilterState>;
 
 export function GlobalTemplate():Promise<store.Template>;
 
@@ -52,6 +62,8 @@ export function ImportTemplatesFromFile():Promise<number>;
 export function JobLogs(arg1:string):Promise<Array<string>>;
 
 export function Jobs():Promise<Array<engine.Job>>;
+
+export function Locate(arg1:string,arg2:string):Promise<main.LocatedFile>;
 
 export function NewTemplate():Promise<store.Template>;
 
@@ -65,7 +77,13 @@ export function PickBinary():Promise<string>;
 
 export function PickDirectory():Promise<string>;
 
+export function PickFile():Promise<string>;
+
 export function PreviewCommand(arg1:string,arg2:string):Promise<engine.Plan>;
+
+export function PreviewFolderScan(arg1:engine.FolderScan):Promise<engine.FolderPreview>;
+
+export function PreviewPaths(arg1:store.Template,arg2:string):Promise<main.PathCheck>;
 
 export function PreviewTemplate(arg1:store.Template,arg2:string):Promise<engine.Plan>;
 
@@ -91,11 +109,15 @@ export function RetryFailed():Promise<number>;
 
 export function RevealPath(arg1:string):Promise<void>;
 
+export function SaveFilterProfile(arg1:string,arg2:store.FilterProfile):Promise<main.FilterState>;
+
 export function SaveGlobalTemplate(arg1:store.Template):Promise<store.Template>;
 
 export function SaveSettings(arg1:store.Settings):Promise<store.Settings>;
 
 export function SaveTemplate(arg1:store.Template):Promise<store.Template>;
+
+export function SetActiveFilter(arg1:string,arg2:boolean):Promise<main.FilterState>;
 
 export function SetAllTemplates(arg1:string):Promise<engine.ApplyResult>;
 

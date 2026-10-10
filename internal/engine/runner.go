@@ -243,9 +243,20 @@ func (r *Runner) Shutdown() {
 
 // InputItem is a file or directory the user dropped into the queue.
 type InputItem struct {
-	Path      string `json:"path"`
-	IsDir     bool   `json:"isDir"`
-	Recursive bool   `json:"recursive"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"isDir"`
+	// Recursive is 收多深，而且它已经是**算完的**结果：`store.DirFilter.Recursive`
+	// 把"设置说只看这一层"和"调用方说不递归"两个来源收窄到一起，这里不再看 `Dirs`。
+	Recursive bool `json:"recursive"`
+	// Dirs 是目录规则：这个目录里收哪几个子目录、是收还是排、命中几条才算。
+	//
+	// 它挂在这一项上而不是让 AddInputs 自己去读设置：设置是 App 的事，runner 只管
+	// "把给我的东西变成任务"。于是拖入、点选文件夹、添加文件三条路必然过同一段代码
+	// —— 有一条自己另做一遍过滤，两边的差就只能在"拖了才发现"的时候暴露。
+	Dirs store.NameRules `json:"dirs"`
+	// Files 是文件规则：收进来的文件里再按**文件名**筛一遍。它和 `Dirs` 完全独立
+	// —— 目录全收、文件只要其中几个是最常见的用法之一。
+	Files store.NameRules `json:"files"`
 }
 
 // MediaExtensions is the whitelist used when expanding directories.
@@ -286,52 +297,78 @@ func (r *Runner) AddInputs(items []InputItem, templateID, templateName string) (
 				errs = append(errs, fmt.Sprintf("%s: 不是媒体文件，已跳过", filepath.Base(p)))
 				continue
 			}
+			// 点名的文件也要过文件规则。它和扫出来的文件是同一件事——"这个文件
+			// 进不进队列"——所以规则只有一套：拖进来一个文件时跳过这一步，会让
+			// "文件过滤"只在扫目录时才有效，而用户看不出这两种情况有什么不同。
+			if !it.Files.Take(filepath.Base(p)) {
+				errs = append(errs, fmt.Sprintf("%s: 被文件过滤条件排除", filepath.Base(p)))
+				continue
+			}
 			added = append(added, NewJob(p, filepath.Dir(p), templateID, templateName))
 			continue
 		}
 
-		root := p
-		if !it.Recursive {
-			entries, err := os.ReadDir(p)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", p, err))
+		// 目录：先按条件挑出要收的那几个子目录，然后每一个都当一次"用户添加的
+		// 目录"（`NewJob` 的 sourceRoot）—— 「同级目录」量的是它，所以产物落在
+		// 它所在的位置旁边，而不是整棵树的根旁边。条件为空时 roots 就是它自己。
+		//
+		// 排除方向下 roots 也是它自己（见 ExpandFolder）："整个文件夹减去几个"
+		// 里那个"整个文件夹"就是落点，条件在收集文件时把命中的子树跳掉。
+		scan := FolderScan{
+			Dir: p, Dirs: it.Dirs, Files: it.Files, Recursive: it.Recursive,
+		}
+		roots := []string{p}
+		if scan.Filtering() && !scan.Dirs.Exclude {
+			matched, _, ferrs := ExpandFolder(scan)
+			errs = append(errs, ferrs...)
+			if len(matched) == 0 {
+				// 悄悄一个都不加是最难查的一种：文件夹明明"加进去了"，列表却是
+				// 空的，而界面上没有任何地方提到过滤条件还在拦着。
+				errs = append(errs, fmt.Sprintf("%s: 没有子目录符合过滤条件", filepath.Base(p)))
 				continue
 			}
-			for _, e := range entries {
-				if e.IsDir() || !isMediaFile(e.Name()) {
-					continue
-				}
-				added = append(added, NewJob(filepath.Join(p, e.Name()), root, templateID, templateName))
-			}
-			continue
+			roots = matched
 		}
 
-		walkErr := filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", path, err))
-				return nil
+		// 目录规则只在排除方向下参与"收哪些文件"；收的方向里 roots 已经是被挑中的
+		// 目录，再拿条件筛一遍会把它们自己的子目录又筛一次。
+		var dirExcl store.NameRules
+		if it.Dirs.Exclude {
+			dirExcl = it.Dirs
+		}
+		before := len(added)
+		dropped := 0
+		for _, root := range roots {
+			w := mediaUnder(root, it.Recursive, dirExcl, it.Files)
+			errs = append(errs, w.Errs...)
+			dropped += w.Filtered
+			for _, f := range w.Files {
+				added = append(added, NewJob(f, root, templateID, templateName))
 			}
-			if d.IsDir() {
-				if strings.HasPrefix(d.Name(), ".") && path != p {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !isMediaFile(d.Name()) {
-				return nil
-			}
-			added = append(added, NewJob(path, root, templateID, templateName))
-			return nil
-		})
-		if walkErr != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", p, walkErr))
+		}
+		// "一个都没收着"有两种原因，说清是哪一种。排除方向没有"没找到子目录"这一步
+		// —— roots 永远是那个文件夹本身 —— 所以那句话在这里说。
+		switch {
+		case len(added) > before:
+		case scan.Dirs.Exclude:
+			errs = append(errs, fmt.Sprintf("%s: 全部文件都被过滤条件排除了", filepath.Base(p)))
+		case dropped > 0:
+			errs = append(errs, fmt.Sprintf("%s: %d 个文件被文件过滤条件排除", filepath.Base(p), dropped))
 		}
 	}
 
 	if len(added) == 0 {
 		return 0, errs
 	}
+	return r.appendJobs(added, errs)
+}
 
+// appendJobs puts the freshly built jobs at the end of the queue, skipping the
+// inputs that are already there.
+//
+// 两处加入路径（拖入 / 扫描）共用它：去重、编号、广播各只有一份，否则"同一个文件
+// 加两次会怎样"就会有两种答案。
+func (r *Runner) appendJobs(added []*Job, errs []string) (int, []string) {
 	r.mu.Lock()
 	seen := map[string]bool{}
 	for _, j := range r.jobs {
@@ -1131,13 +1168,19 @@ func (r *Runner) runJob(job *Job) {
 			dest, mErr = Relocate(MoveRequest{
 				Src:       job.Input,
 				SrcRoot:   job.SourceRoot,
-				Dest:      filter.Dest,
-				Fallback:  store.DestRule{Mode: store.OutputCustom, Suffix: store.DefaultOutputSuffix},
+				Dirs:      filter.Dir,
 				Pattern:   filter.RenamePattern,
 				Overwrite: filter.Overwrite,
 				Copy:      filter.Action == store.ActionCopy,
 				Template:  tpl.Name,
+				Index:     job.Index,
 			})
+			// 筛选规则也会把源文件搬走，落点照样要记：不然这一行的「定位源文件」
+			// 永远只有「文件不在这里了」这一句。只记真的搬成功的那次 —— 搬失败
+			// 的文件还在原处，那才是它该被定位到的地方。
+			if mErr == nil {
+				r.markSourceMoved(job, filter.Action, dest)
+			}
 		}
 
 		verb := "移动"
@@ -1150,10 +1193,15 @@ func (r *Runner) runJob(job *Job) {
 		job.EndedAt = time.Now()
 		job.ElapsedMS = job.EndedAt.Sub(job.StartedAt).Milliseconds()
 		if filter.HandlesExcluded() {
-			if mErr != nil {
+			switch {
+			case mErr != nil:
 				job.Error = mErr.Error()
 				job.Message = reason + "；" + verb + "失败: " + mErr.Error()
-			} else {
+			case dest == "":
+				// 目标算出来就是源文件自己（目录表达式留空、命名又没改），
+				// 那就什么都没发生，不能报一句"已移动到它原来的位置"。
+				job.Message = reason + "；" + verb + "目标与源文件相同，未改动"
+			default:
 				job.Output = dest
 				job.OutputName = filepath.Base(dest)
 				job.Message = reason + "；已" + verb + "到 " + dest
@@ -1435,6 +1483,7 @@ func (r *Runner) handleProcessed(job *Job, s store.Settings, tpl store.Template,
 	if dest != "" {
 		r.log(job, s, "[processed] 源文件已"+verb+"到 "+dest)
 		src = dest
+		r.markSourceMoved(job, ex.Action, dest)
 	}
 
 	// 「留在原处」and the two relocations all end the same way: this file has
@@ -1457,6 +1506,25 @@ func (r *Runner) handleProcessed(job *Job, s store.Settings, tpl store.Template,
 	return true
 }
 
+// markSourceMoved remembers where a moved source ended up.
+//
+// Two rules file a source away -- 「已处理过的文件」 and the filter's 移动到目标目录 --
+// and the list's 「定位源文件」 has one answer to give, so the destination is written
+// here and nowhere else, whichever rule moved it. Without the filter half, a filtered
+// row's 定位源文件 only ever says "文件不在这里了" while the file sits at the path that
+// same row records as its output.
+//
+// 复制 is skipped by both: the original is still there, so the row's own path is still
+// the right answer and a second one would only be a way to open the wrong file.
+func (r *Runner) markSourceMoved(job *Job, action, dest string) {
+	if dest == "" || action != store.ActionMove {
+		return
+	}
+	job.lock()
+	job.SourceMovedTo = dest
+	job.unlock()
+}
+
 // existingRelocate moves or copies the SOURCE of a file this template has
 // processed, per the 「已处理过的文件」 section. It returns the destination and the
 // verb for the log line, or an empty destination when the section says to leave
@@ -1470,24 +1538,21 @@ func (r *Runner) existingRelocate(job *Job, tpl store.Template, ex *store.Existi
 	if action != store.ActionMove && action != store.ActionCopy {
 		return "", "", nil
 	}
-	if !ex.Dest.Usable() {
-		return "", "", fmt.Errorf("处理方式选了移动或复制，但目标目录不可用")
-	}
 	verb = "移动"
 	if action == store.ActionCopy {
 		verb = "复制"
 	}
 	dest, err = Relocate(MoveRequest{
-		Src:      job.Input,
-		SrcRoot:  job.SourceRoot,
-		Dest:     ex.Dest,
-		Fallback: store.DestRule{Mode: store.OutputSibling, Suffix: store.DefaultOutputSuffix},
+		Src:     job.Input,
+		SrcRoot: job.SourceRoot,
+		Dirs:    ex.Dir,
 		// The source file was never re-encoded, so {ext} is its own extension --
 		// the same rule the problem-file policies use.
 		Pattern:   ex.Pattern,
 		Overwrite: ex.Overwrite,
 		Copy:      action == store.ActionCopy,
 		Template:  tpl.Name,
+		Index:     job.Index,
 	})
 	if err != nil {
 		return "", verb, err
@@ -1526,6 +1591,7 @@ func (r *Runner) fileProcessedSource(job *Job, s store.Settings, tpl store.Templ
 	}
 	if dest != "" {
 		r.log(job, s, "[processed] 源文件已"+verb+"到 "+dest)
+		r.markSourceMoved(job, ex.Action, dest)
 	}
 }
 
@@ -1562,10 +1628,6 @@ func (r *Runner) handleProblemFile(job *Job, s store.Settings, tpl store.Templat
 	if action != store.ActionMove && action != store.ActionCopy {
 		return
 	}
-	rule := spec.Dest(statusKey)
-	if !rule.Usable() {
-		return
-	}
 
 	src := job.Input
 	if st, err := os.Stat(src); err != nil || st.IsDir() {
@@ -1579,16 +1641,15 @@ func (r *Runner) handleProblemFile(job *Job, s store.Settings, tpl store.Templat
 	}
 
 	dest, err := Relocate(MoveRequest{
-		Src:      src,
-		SrcRoot:  job.SourceRoot,
-		Dest:     rule,
-		Fallback: store.DestRule{Mode: store.OutputMirror, Suffix: store.DefaultOutputSuffix},
+		Src:     src,
+		SrcRoot: job.SourceRoot,
+		Dirs:    spec.Dir(statusKey),
 		// Relocate falls back to "{name}.{ext}" for an empty pattern, which is
 		// exactly the old behaviour: keep the file's own name.
-		Pattern:   spec.Pattern(statusKey),
-		Overwrite: false,
-		Copy:      action == store.ActionCopy,
-		Template:  tpl.Name,
+		Pattern:  spec.Pattern(statusKey),
+		Copy:     action == store.ActionCopy,
+		Template: tpl.Name,
+		Index:    job.Index,
 	})
 	if err != nil {
 		r.log(job, s, "[policy] 文件处理失败: "+err.Error())
@@ -1596,6 +1657,10 @@ func (r *Runner) handleProblemFile(job *Job, s store.Settings, tpl store.Templat
 		job.addWarningLocked("按策略处理源文件失败: " + err.Error())
 		job.unlock()
 		r.emitJob(job)
+		return
+	}
+	if dest == "" {
+		// 目标就是源文件自己，没有要报的搬迁。
 		return
 	}
 	verb := "移动"
@@ -2154,22 +2219,23 @@ func (r *Runner) record(job *Job, s store.Settings, status Status, note string) 
 	snap := job.Snapshot()
 
 	rec := store.Record{
-		ID:           newJobID(),
-		Input:        snap.Input,
-		Output:       snap.Output,
-		TemplateID:   snap.TemplateID,
-		TemplateName: snap.TemplateName,
-		Command:      snap.Command,
-		Status:       status.Label(),
-		Note:         note,
-		Error:        snap.Error,
-		Warnings:     snap.Warnings,
-		StartedAt:    snap.StartedAt,
-		EndedAt:      snap.EndedAt,
-		ElapsedMS:    snap.ElapsedMS,
-		Speed:        snap.Speed,
-		Before:       summaryOf(snap.InfoBefore),
-		After:        summaryOf(snap.InfoAfter),
+		ID:            newJobID(),
+		Input:         snap.Input,
+		Output:        snap.Output,
+		SourceMovedTo: snap.SourceMovedTo,
+		TemplateID:    snap.TemplateID,
+		TemplateName:  snap.TemplateName,
+		Command:       snap.Command,
+		Status:        status.Label(),
+		Note:          note,
+		Error:         snap.Error,
+		Warnings:      snap.Warnings,
+		StartedAt:     snap.StartedAt,
+		EndedAt:       snap.EndedAt,
+		ElapsedMS:     snap.ElapsedMS,
+		Speed:         snap.Speed,
+		Before:        summaryOf(snap.InfoBefore),
+		After:         summaryOf(snap.InfoAfter),
 	}
 	if status == StatusFiltered || status == StatusSkipped {
 		rec.After = store.MediaSummary{}

@@ -65,44 +65,36 @@ func containsStr(list []string, v string) bool {
 // Excluded / problem file handling
 // ---------------------------------------------------------------------------
 
-// MoveRequest asks the engine to relocate a file. It is used by the filter rules
-// and by the error/warning policies, both of which let the user pick any of the
-// four output modes via Dest.
+// MoveRequest asks the engine to relocate a file. It is used by the filter rules,
+// by 「已处理过的文件」 and by the error/warning policies, all of which let the
+// user pick the destination with the same directory expression.
 type MoveRequest struct {
 	Src     string
 	SrcRoot string
-	Dest    store.DestRule
+	Dirs    store.DirSpec
 	Pattern string // 支持 {name} {ext} {template} {dir} {index} 等占位符
-	// Fallback backsstop a Dest rule that leaves Dir blank for the custom/mirror
-	// modes; without it those modes would have nowhere to write.
-	Fallback  store.DestRule
+	// Overwrite lets the destination replace an existing file instead of being
+	// given a "_1" name.
 	Overwrite bool
 	Copy      bool // true = 复制而不是移动
 	Template  string
+	Index     int
 }
 
 // Relocate moves or copies a file to its destination and returns the new path.
+//
+// An empty path with a nil error means there was nothing to do: the destination
+// resolved to the source itself. Callers use that to leave the job's output
+// blank instead of reporting a move that never happened.
 func Relocate(req MoveRequest) (string, error) {
 	if strings.TrimSpace(req.Src) == "" {
 		return "", fmt.Errorf("源文件为空")
 	}
-	rule := req.Dest.Inherit(req.Fallback)
-	if err := rule.Validate("转移目标"); err != nil {
-		return "", err
-	}
-
-	dir, err := store.ResolveDestDir(store.DestRequest{
-		Rule:          rule,
-		SrcPath:       req.Src,
-		SrcRoot:       req.SrcRoot,
-		DefaultSuffix: store.DefaultOutputSuffix,
+	dir := store.ResolveDestDir(store.DestRequest{
+		Spec:    req.Dirs,
+		SrcPath: req.Src,
+		SrcRoot: req.SrcRoot,
 	})
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(dir) == "" {
-		return "", fmt.Errorf("未指定目标目录")
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("无法创建目录 %s: %w", dir, err)
 	}
@@ -122,14 +114,10 @@ func Relocate(req MoveRequest) (string, error) {
 		Ext:      ext,
 		Template: req.Template,
 		Dir:      filepath.Base(filepath.Dir(req.Src)),
+		Index:    req.Index,
 	})
 	// Guard against illegal characters that would break on Windows.
-	newName = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(`\/:*?"<>|`, r) {
-			return '_'
-		}
-		return r
-	}, newName)
+	newName = store.Sanitize(newName)
 	// Same rule as ResolveOutput: the file keeps its own extension, and "does it
 	// already end with .mp4" is the question -- not "does it have a dot in it".
 	// A source named "qqq.123.mp4" renames to "qqq.123" with a {name} pattern,
@@ -137,14 +125,18 @@ func Relocate(req MoveRequest) (string, error) {
 	newName = EnsureExt(newName, ext)
 
 	dest := filepath.Join(dir, newName)
+	if samePath(dest, req.Src) {
+		// Already where it should be. Asked before the uniqueness check, which
+		// would otherwise read the file as a name clash with itself and call the
+		// result a_1.mp4: the file would not have gone anywhere, but its name
+		// would have changed.
+		return "", nil
+	}
 	if !req.Overwrite {
 		dest = EnsureUnique(dest, func(p string) bool {
 			_, err := os.Stat(p)
 			return err == nil
 		})
-	}
-	if samePath(dest, req.Src) {
-		return req.Src, nil
 	}
 
 	if req.Copy {
@@ -220,18 +212,13 @@ func OutputRoot(req OutputRequest) (string, error) {
 	if req.Info == nil {
 		return "", fmt.Errorf("缺少媒体信息")
 	}
-	// The same four modes every other stage gets; the blanks were already filled
-	// in by store.Template.Effective.
+	// The same destination rule every other stage gets; the blanks were already
+	// filled in by store.Template.Effective.
 	return store.ResolveDestDir(store.DestRequest{
-		Rule: store.DestRule{
-			Mode:   req.Tpl.OutMode,
-			Dir:    req.Tpl.OutDir,
-			Suffix: req.Tpl.OutSuffix,
-		},
-		SrcPath:       req.Info.Path,
-		SrcRoot:       req.SrcRoot,
-		DefaultSuffix: store.DefaultOutputSuffix,
-	})
+		Spec:    req.Tpl.OutDirSpec,
+		SrcPath: req.Info.Path,
+		SrcRoot: req.SrcRoot,
+	}), nil
 }
 
 // ResolveOutput returns the final output path.
@@ -262,8 +249,8 @@ func ResolveOutput(req OutputRequest) (string, error) {
 	if pattern == "" {
 		// Keep the source file name, and nothing else. The output directory already
 		// differs from the source one, so decorating the name as well would only add
-		// noise -- and when the mode is "与源文件同目录" the name is the only thing
-		// keeping the result apart from the input.
+		// noise -- and with a blank 输出目录 (the file stays where it is) the name is
+		// the only thing keeping the result apart from the input.
 		//
 		pattern = "{name}"
 	}
@@ -276,12 +263,7 @@ func ResolveOutput(req OutputRequest) (string, error) {
 		Dir:      filepath.Base(srcDir),
 		Index:    req.Index,
 	})
-	newName = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(`\/:*?"<>|`, r) {
-			return '_'
-		}
-		return r
-	}, newName)
+	newName = store.Sanitize(newName)
 
 	// A trailing dot is not an extension. It shows up when an older pattern's
 	// {ext} was stripped ("{name}.{ext}" -> "clip."), and letting it through

@@ -23,11 +23,32 @@ export function field(label, control, hint = '', cls = '') {
   return `<div class="field ${cls}"><label>${esc(label)}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</div>`;
 }
 
+/**
+ * 参数的开关，两种密度，一个控件。
+ *
+ * 界面上只该有一种"打开 / 关闭"的样子。以前参数框有两种：一部分是左右开关，另一
+ * 部分是原生方框勾选 —— 同一个界面里两种语言，用户得先分辨"这个勾选框是不是也是
+ * 开关"。现在原生勾选框只剩列表的多选（选中文件不是设置），其余全走这里。
+ *
+ * `switchRow`：整行，标题在左、开关在右，用于段里独立的一条设置。
+ * `switchInline`：紧凑，几个可以并排（`.switch-strip`），用于一组相关的参数。
+ *
+ * `hint` 可空 —— 空就不出 `<span>`，免得空元素把行高撑起来。`name` 也可以空：段头
+ * 那个「与全局不同」用的是 `data-sec`，多一个 name 会让表单绑定把它当普通字段读。
+ */
 export function switchRow(title, hint, name, checked) {
   return `<div class="switch-row">
-    <div class="switch-row__text"><b>${esc(title)}</b><span>${esc(hint)}</span></div>
+    <div class="switch-row__text"><b>${esc(title)}</b>${hint ? `<span>${esc(hint)}</span>` : ''}</div>
     <label class="switch"><input type="checkbox" name="${esc(name)}"${checked ? ' checked' : ''}></label>
   </div>`;
+}
+
+export function switchInline(title, name, checked, tip = '', attrs = '') {
+  return `<label class="switch-inline"${tip ? ` title="${esc(tip)}"` : ''}>
+    ${title ? `<span class="switch-inline__label">${esc(title)}</span>` : ''}
+    <span class="switch"><input type="checkbox"${name ? ` name="${esc(name)}"` : ''}${
+      attrs ? ` ${attrs}` : ''}${checked ? ' checked' : ''}></span>
+  </label>`;
 }
 
 /* -------------------------------------------------------------- formatting */
@@ -207,6 +228,40 @@ export async function shellAction(promise) {
   }
 }
 
+/**
+ * 「定位源文件」入口的说明文字。
+ *
+ * 任务列表和记录列表各有一排定位入口，说法得一样；搬走过的时候还要把落点写出来
+ * —— 那正是用户点它想问的事。两个视图因此共用这一份，而不是各写一句。
+ *
+ * @param {{sourceMovedTo?: string}} item 带 sourceMovedTo 的任务或记录
+ */
+export function locateSourceHint(item) {
+  const moved = item?.sourceMovedTo;
+  return moved ? `定位源文件（已移动到 ${moved}）` : '定位源文件';
+}
+
+/**
+ * 定位文件，并在它不在列表显示的那个位置时说出来。
+ *
+ * 源文件会被「已处理过的文件」搬到别处，所以「定位源文件」要试两个地方：列表
+ * 上那条路径，和它被搬去的位置。落到第二个位置上的时候，用户看到的是资源管理
+ * 器开在一个自己没点过的目录里 —— 不说一句，这就是个解释不通的结果。定位输出
+ * 没有第二个位置，所以这句话只会为源文件出现。
+ *
+ * @param {Promise<{path: string, moved: boolean}>} promise locate 调用的返回值
+ */
+export async function locateAction(promise) {
+  try {
+    const r = await promise;
+    if (r?.moved && r.path) toast(`源文件已移动，已定位到 ${r.path}`, 'info', 6000);
+    return r;
+  } catch (err) {
+    toast(String(err?.message || err), 'error', 5200);
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ command */
 
 // A token starts a new argument line when it looks like a flag. Requiring a
@@ -333,6 +388,205 @@ export function confirmDialog(title, message, confirmLabel = '确定', danger = 
     modal.querySelector('[data-no]').addEventListener('click', () => { close(); resolve(false); });
     modal.querySelector('[data-yes]').addEventListener('click', () => { close(); resolve(true); });
   });
+}
+
+/* ------------------------------------------------------------- list selection */
+
+/**
+ * 左侧列表的多选。和资源管理器同一套手势：单击 = 选中并进入编辑，Ctrl 加选/减选，
+ * Shift 从上一次点的那一行连选，Ctrl+A 全选。
+ *
+ * **选中和"正在编辑的那一行"分开存。** Ctrl 点出来的一串里只有最后点的那一行是当前
+ * 编辑的对象 —— 右侧面板显示它，右键菜单里的「复制」「删除」也作用在它身上。不分成
+ * 两份的话，"复制"要么作用在一整串上（用户没说要那样），要么随机挑一个。
+ *
+ * 只管"哪些行被勾着"，不碰 DOM：两个列表（模板、过滤方案）行高、拖拽、搜索各不
+ * 相同，判定却该是同一句。返回的 `click` 只回答一件事 —— **这一行要不要变成当前
+ * 正在编辑的那一行**；调用方自己决定要不要重画右侧。
+ *
+ * @param {(ids: string[]) => void} onChange 勾选变了就喊一声（重画高亮用）
+ */
+export function createListSelection(onChange) {
+  const picked = new Set();
+  let anchor = '';
+  let current = '';
+  const fire = () => onChange?.([...picked]);
+
+  return {
+    /** 当前勾着的行（按点选的先后，不按列表顺序）。 */
+    get ids() { return [...picked]; },
+    /** 正在编辑的那一行。它**一定**在 `ids` 里。 */
+    get current() { return current; },
+    has: (id) => picked.has(id),
+
+    /** 只勾这一行。新建、删完之后落到别的行上时用 —— 不是"多选"，是换了一个。 */
+    only(id) {
+      picked.clear();
+      if (id) picked.add(id);
+      current = id;
+      anchor = id;
+      fire();
+    },
+
+    /**
+     * 处理一次点击。
+     *
+     * @param {string[]} order 列表里**当前可见**的行 id，Shift 的范围按它算
+     * @param {string} id 点到的那一行
+     * @param {MouseEvent} [ev]
+     * @returns {boolean} 这一行是不是要变成"正在编辑"的那一行
+     */
+    click(order, id, ev) {
+      if (ev?.shiftKey && anchor) {
+        const a = order.indexOf(anchor);
+        const b = order.indexOf(id);
+        if (a >= 0 && b >= 0) {
+          // Shift 自己就是"换成这一段"，不按就永远在原来那一串上追加；Ctrl+Shift
+          // 才是往现有勾选里加一段。
+          if (!ev.ctrlKey && !ev.metaKey) picked.clear();
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let i = lo; i <= hi; i += 1) picked.add(order[i]);
+          current = id;
+          fire();
+          return true;
+        }
+        // 锚点已经不在可见的列表里（搜过、或者刚被删掉）：退化成一次普通单击，
+        // 而不是"从列表开头连到这一行"。
+      }
+      if (ev?.ctrlKey || ev?.metaKey) {
+        if (picked.has(id)) picked.delete(id); else picked.add(id);
+        current = id;
+        anchor = id;
+        fire();
+        return true;
+      }
+      picked.clear();
+      picked.add(id);
+      current = id;
+      anchor = id;
+      fire();
+      return true;
+    },
+
+    /** Ctrl+A。返回 false 表示"没接管这次按键"，让调用方决定要不要拦。 */
+    selectAll(order) {
+      if (!order.length) return false;
+      picked.clear();
+      for (const id of order) picked.add(id);
+      current = current || order[0];
+      anchor = current;
+      fire();
+      return true;
+    },
+
+    /**
+     * 整张表变了之后（新建、删除、改名、搜索词变了）把已经不存在的行清掉。
+     *
+     * 不清的话，"复制"会拿着一串看不见的行去后端，而那些行要么报错要么被静默忽略 ——
+     * 两种都比"少选了一项"更难解释。
+     */
+    prune(order) {
+      const alive = new Set(order);
+      let changed = false;
+      for (const id of [...picked]) {
+        if (!alive.has(id)) { picked.delete(id); changed = true; }
+      }
+      if (!alive.has(anchor)) anchor = current && alive.has(current) ? current : '';
+      if (!alive.has(current)) current = [...picked][0] || '';
+      if (changed) fire();
+    },
+
+    clear() { picked.clear(); current = ''; anchor = ''; fire(); },
+  };
+}
+
+/* ------------------------------------------------------------------- paging */
+
+/**
+ * 每页条数的可选值。两张列表共用一份：它们的分页条长得一样，能选的条数也该一样。
+ */
+export const PAGE_SIZES = [50, 100, 200, 300];
+
+/**
+ * 分页条的标记。配 bindPager 用。
+ *
+ * 两张列表用的是同一个条，所以标记和行为放在一起：分开写就是两次把「最后一页
+ * 越界」写歪的机会。
+ */
+export function pagerHtml() {
+  return `
+    <span class="hint" data-role="pager-range"></span>
+    <div class="spacer"></div>
+    <label class="pager__size">
+      <span>每页</span>
+      <select class="select" data-role="pager-size" title="每页显示多少条">
+        ${PAGE_SIZES.map((n) => `<option value="${n}">${n} 条</option>`).join('')}
+      </select>
+    </label>
+    <button class="btn btn--text btn--icon btn--sm" data-role="pager-prev" title="上一页">${icon('chevronLeft', 'sm')}</button>
+    <span class="pager__page" data-role="pager-page"></span>
+    <button class="btn btn--text btn--icon btn--sm" data-role="pager-next" title="下一页">${icon('chevronRight', 'sm')}</button>`;
+}
+
+/**
+ * 驱动一条分页条。
+ *
+ * 页码留在这里而不是调用方：调用方每次重画都得先问一句「现在显示的是第几页」，
+ * 问回来的页码已经按当前的候选总数钳过边，于是页码不可能比它数的那份列表活得久
+ * （删到最后一页空了、筛选之后只剩两页，都会自己退回去）。
+ *
+ * @param {HTMLElement} host 装着 pagerHtml() 的那个元素
+ * @param {{ onChange?: () => void }} [opts] 页码或每页条数被用户改动时调用
+ */
+export function bindPager(host, { onChange } = {}) {
+  const state = { page: 1, pageSize: PAGE_SIZES[0], total: 0 };
+  const sizeEl = host.querySelector('[data-role=pager-size]');
+  const rangeEl = host.querySelector('[data-role=pager-range]');
+  const pageEl = host.querySelector('[data-role=pager-page]');
+  const prevEl = host.querySelector('[data-role=pager-prev]');
+  const nextEl = host.querySelector('[data-role=pager-next]');
+  sizeEl.value = String(state.pageSize);
+
+  const lastPage = () => Math.max(1, Math.ceil(state.total / state.pageSize));
+
+  function go(n) {
+    const p = Math.min(lastPage(), Math.max(1, n));
+    if (p === state.page) return;
+    state.page = p;
+    onChange?.();
+  }
+
+  sizeEl.addEventListener('change', () => {
+    state.pageSize = Number(sizeEl.value) || PAGE_SIZES[0];
+    // 换了每页条数，「第 5 页」指的是另一段内容了，回到开头最不容易看错。
+    state.page = 1;
+    onChange?.();
+  });
+  prevEl.addEventListener('click', () => go(state.page - 1));
+  nextEl.addEventListener('click', () => go(state.page + 1));
+
+  return {
+    get page() { return state.page; },
+    get pageSize() { return state.pageSize; },
+    /** 回到第 1 页（筛选条件变了的时候用）。 */
+    reset() { state.page = 1; },
+    /**
+     * 把分页条指向一份 total 条内容的列表，返回它现在显示的是第几页。
+     */
+    render(total) {
+      state.total = Math.max(0, Number(total) || 0);
+      const last = lastPage();
+      if (state.page > last) state.page = last;
+      if (state.page < 1) state.page = 1;
+      const from = (state.page - 1) * state.pageSize;
+      const to = Math.min(from + state.pageSize, state.total);
+      rangeEl.textContent = state.total === 0 ? '0 条' : `${from + 1}–${to} / 共 ${state.total} 条`;
+      pageEl.textContent = `第 ${state.page} / ${last} 页`;
+      prevEl.disabled = state.page <= 1;
+      nextEl.disabled = state.page >= last;
+      return state.page;
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ helpers */

@@ -3,6 +3,7 @@ import { icon, brandSvg } from './icons.js';
 import { esc, toast, confirmDialog } from './ui.js';
 import { createTasksView } from './views/tasks.js';
 import { createTemplatesView } from './views/templates.js';
+import { createFiltersView } from './views/filters.js';
 import { createHistoryView } from './views/history.js';
 import { createSettingsView } from './views/settings.js';
 
@@ -16,6 +17,11 @@ const state = {
   options: {},
   templates: [],
   currentTemplateId: '',
+  // 过滤方案：有哪些、此刻在用哪套、有没有禁用、以及**生效的规则本身**。四样一起放进
+  // state，是因为任务页那个下拉和「过滤」页都要它，而它们各自再按名字去列表里找一遍，
+  // 就是"名字找不到时退回第一套"这条规则的第三份实现。`off` 只活在内存里：本次运行
+  // 不过滤，关掉程序再打开回到上次落盘的那套。
+  filter: { profiles: [], active: '', off: false, profile: null },
   jobs: [],
   stats: {},
   history: [],
@@ -27,6 +33,19 @@ const state = {
 const ctx = {
   state, api, toast,
   notifyTemplatesChanged: () => views.templates?.onTemplatesChanged?.(),
+  /**
+   * 过滤方案变了：换了一套（任务页下拉）、禁用了、存了一套、或删掉了一套。
+   *
+   * 后端每次都把**整份状态**交回来，所以这里是"抄下来 + 通知"，不是"照着改动猜一份
+   * 新状态"。两个页面都要知道：任务页那个下拉要重填选项，过滤页只是重画列表上的
+   * "正在编辑"标记 —— 它正在编辑的草稿不动，否则换个方案回来会发现自己白改了。
+   */
+  applyFilterState: (st) => {
+    if (!st) return;
+    state.filter = st;
+    views.tasks?.onFilterChanged?.();
+    views.filters?.onFilterChanged?.();
+  },
   // Assigned once showContextMenu exists; views need it for row-level actions.
   showContextMenu: (...a) => showContextMenu(...a),
 };
@@ -36,6 +55,11 @@ const ctx = {
 const PAGES = [
   { id: 'tasks', label: '任务', icon: 'queue', title: '任务队列' },
   { id: 'templates', label: '模板', icon: 'layers', title: '参数模板' },
+  // 「过滤」紧跟在「模板」后面：两者改的都是"往队列里加东西时会自动套上的规则"，一个
+  // 管编码参数，一个管收哪些文件。它们各自是一整页，因为一套规则有十几个字段，塞进
+  // 任务页那个工具栏就只能做成弹窗，而弹窗没法在别人问"我现在这套到底设了什么"的
+  // 时候留在屏幕上。
+  { id: 'filters', label: '过滤', icon: 'filter', title: '过滤方案' },
   { id: 'history', label: '记录', icon: 'history', title: '处理记录' },
   { id: 'settings', label: '设置', icon: 'settings', title: '设置' },
 ];
@@ -43,6 +67,7 @@ const PAGES = [
 const views = {
   tasks: createTasksView(ctx),
   templates: createTemplatesView(ctx),
+  filters: createFiltersView(ctx),
   history: createHistoryView(ctx),
   settings: createSettingsView(ctx),
 };
@@ -171,7 +196,10 @@ titlebar.addEventListener('dblclick', (e) => {
 });
 
 Object.values(views).forEach((v) => {
-  v.el.style.display = 'none';
+  // `hidden` rather than an inline display: the global `[hidden] { display: none
+  // !important }` already does this, and it leaves the DOM saying which page is on
+  // screen -- an inline `display` is invisible to any selector trying to find it.
+  v.el.hidden = true;
   pageHost.appendChild(v.el);
 });
 
@@ -198,7 +226,7 @@ async function paint() {
   // The rail's active label is the only place the current page is named.
 
   Object.entries(views).forEach(([id, v]) => {
-    v.el.style.display = id === state.page ? 'flex' : 'none';
+    v.el.hidden = id !== state.page;
   });
   await views[state.page]?.mount?.();
 }
@@ -379,6 +407,7 @@ async function boot(silent = false) {
   state.settings = data.settings || {};
   state.options = data.options || {};
   state.templates = data.templates || [];
+  state.filter = data.filter || state.filter;
   state.jobs = data.jobs || [];
   state.stats = data.stats || {};
   state.history = data.history || [];

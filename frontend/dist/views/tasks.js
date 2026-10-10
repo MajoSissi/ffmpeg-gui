@@ -2,9 +2,10 @@ import { icon } from '../icons.js';
 import {
   esc, humanSize, humanDuration, humanElapsed, resolution, pct, statusChip, statusMeta, statusLabel,
   toast, confirmDialog, copyText, dateText, num, bitrateText,
-  shellAction, commandHtml,
+  commandHtml, pagerHtml, bindPager, locateAction, locateSourceHint,
 } from '../ui.js';
 import { effective } from './sections.js';
+import { profileSummary } from './filters.js';
 
 export function createTasksView(ctx) {
   const el = document.createElement('section');
@@ -29,26 +30,36 @@ export function createTasksView(ctx) {
   ];
 
   el.innerHTML = `
-    <div class="toolbar">
-      <button class="btn btn--tonal" data-act="add-files">${icon('add')}添加文件</button>
-      <button class="btn btn--tonal" data-act="add-folder">${icon('folderOpen')}添加文件夹</button>
-      <div class="sep"></div>
-      <select class="select" data-role="template" title="处理模板"></select>
-      <select class="select" data-role="status-filter" title="只显示某一类状态的任务">
-        ${STATUS_FILTERS.map((f) => `<option value="${f.value}">${f.label}</option>`).join('')}
-      </select>
-      <div class="sep"></div>
-      <button class="btn btn--filled" data-act="start">${icon('play')}开始</button>
-      <button class="btn" data-act="pause">${icon('pause')}暂停</button>
-      <button class="btn" data-act="stop">${icon('stop')}停止</button>
-      <div class="toolbar__right">
-        <span class="chip chip--muted" data-role="stat-total">0 个任务</span>
-        <span class="chip chip--ok" data-role="stat-done" hidden></span>
-        <span class="chip chip--err" data-role="stat-failed" hidden></span>
-        <span class="chip chip--warn" data-role="stat-filter">${icon('filter')}<span data-role="filter-text">未启用过滤</span></span>
-        <div class="sep"></div>
-        <button class="btn btn--text btn--icon" data-act="retry" title="重试失败的任务">${icon('refresh')}</button>
-        <button class="btn btn--text btn--icon" data-act="clear-finished" title="清理已完成">${icon('trash')}</button>
+    <div class="toolbar toolbar--rows">
+      <div class="toolbar__row">
+        <button class="btn btn--tonal" data-act="add-files">${icon('add')}添加文件</button>
+        <button class="btn btn--tonal" data-act="add-folder">${icon('folderOpen')}添加文件夹</button>
+        <select class="select" data-role="status-filter" title="只显示某一类状态的任务">
+          ${STATUS_FILTERS.map((f) => `<option value="${f.value}">${f.label}</option>`).join('')}
+        </select>
+        <button class="btn btn--text" data-act="retry">${icon('refresh')}重试失败</button>
+        <button class="btn btn--text" data-act="clear-finished">${icon('trash')}清理已完成</button>
+        <div class="toolbar__right">
+          <button class="btn" data-act="stop">${icon('stop')}停止</button>
+          <button class="btn" data-act="pause">${icon('pause')}暂停</button>
+          <button class="btn btn--filled" data-act="start">${icon('play')}开始</button>
+        </div>
+      </div>
+      <div class="toolbar__row">
+        <div class="toolbar__field">
+          <span class="toolbar__label">${icon('layers', 'sm')}模板</span>
+          <select class="select" data-role="template" title="用哪套参数处理这批文件"></select>
+        </div>
+        <div class="toolbar__field">
+          <span class="toolbar__label">${icon('filter', 'sm')}过滤</span>
+          <select class="select select--profile" data-role="profile" title="本次运行按哪套过滤规则收文件"></select>
+        </div>
+        <div class="toolbar__right">
+          <span class="chip chip--muted" data-role="stat-total">0 个任务</span>
+          <span class="chip chip--ok" data-role="stat-done" hidden></span>
+          <span class="chip chip--err" data-role="stat-failed" hidden></span>
+          <span class="chip chip--warn" data-role="stat-filter">${icon('filter')}<span data-role="filter-text">未启用过滤</span></span>
+        </div>
       </div>
     </div>
 
@@ -83,6 +94,7 @@ export function createTasksView(ctx) {
         <p data-role="empty-text">点击「添加文件」或「添加文件夹」，也可以把文件直接拖进窗口。支持多选文件与多选目录。</p>
       </div>
     </div>
+    <div class="pager" data-role="pager">${pagerHtml()}</div>
     <div class="panel" data-role="panel">
       <div class="panel__grip" data-role="grip" title="上下拖动可调整面板高度"></div>
       <div class="panel__head">
@@ -115,12 +127,18 @@ export function createTasksView(ctx) {
   const gripEl = el.querySelector('[data-role=grip]');
   const tplSelect = el.querySelector('[data-role=template]');
   const statusSelect = el.querySelector('[data-role=status-filter]');
+  const profileSelect = el.querySelector('[data-role=profile]');
   const bulkbarEl = el.querySelector('[data-role=bulkbar]');
 
   const local = {
     tab: 'log',
     checked: new Set(),
+    // The rows on the current page, and the rows the filter lets through. Keeping
+    // the two apart is what lets a queue update tell "this row is off screen"
+    // (leave it alone) from "this row has just entered or left the filter"
+    // (rebuild) -- see onJobUpdate.
     renderedIds: [],
+    filteredIds: [],
     followLog: true,
     collapsed: false,
     // '' = 全部状态. A view setting, not a queue one: it never reaches the backend,
@@ -132,6 +150,22 @@ export function createTasksView(ctx) {
     // to copy without walking the rendered markup.
     lastCommand: '',
   };
+
+  /**
+   * 队列自己分页，不经过后端。
+   *
+   * 队列最多几百条，而且每一条都还是活的：不在屏幕上的行照样有进度进来，那些行
+   * 是就地打补丁的，不重建。分页在这里的作用是把 DOM 压小——几千个 <tr> 一起
+   * 存在，每一次结构变化都要重排一整张表，这才是长队列卡顿的来源。
+   */
+  const pager = bindPager(el.querySelector('[data-role=pager]'), {
+    onChange: () => {
+      renderJobs();
+      // 换页之后，上一页勾过的行已经不在屏幕上了：裁剪放在 paintSelection 里，
+      // 和筛选走的是同一条规则。
+      paintSelection();
+    },
+  });
 
   /* ------------------------------------------------------------ template */
 
@@ -209,8 +243,27 @@ export function createTasksView(ctx) {
     // read the checked set, and acting on a row nobody can see is how a filter turns
     // into a way to delete the wrong files.
     local.checked.clear();
+    // 筛选变了，第 3 页指的是另一份列表了。
+    pager.reset();
     renderJobs();
     paintSelection();
+  });
+
+  /**
+   * 任务页上换方案就是**换掉此刻在用的那套**，并且记住它：这里选哪套，下次打开就从它
+   * 开始。「不使用过滤」也在这颗下拉里，值是空串。
+   *
+   * 换的是"往下收的时候按哪套规则"，所以队列里已经在的任务一个都不动：过滤发生在加入
+   * 的那一刻，不是跑到一半再筛。把已经在的任务也筛一遍，才是真的把人坑了。
+   */
+  profileSelect.addEventListener('change', async () => {
+    const name = profileSelect.value;
+    try {
+      ctx.applyFilterState(await ctx.api.setActiveFilter(name, name === ''));
+    } catch (e) {
+      toast(e?.message || '切换过滤方案失败', 'error');
+    }
+    renderToolbar();
   });
 
   /* -------------------------------------------------------------- actions */
@@ -223,8 +276,9 @@ export function createTasksView(ctx) {
         const r = await ctx.api.addFilesDialog(ctx.state.recursive);
         await reportAdd(r);
       } else if (act === 'add-folder') {
-        const r = await ctx.api.addFolderDialog(ctx.state.recursive);
-        await reportAdd(r);
+        // 选目录，然后按**当前生效的那套方案**收，不再弹面板。规则归「过滤」页管 ——
+        // 一批目录连着加好几次的时候，每次都要重新填一遍同样的条件才是真的烦。
+        await reportAdd(await ctx.api.addFolderDialog(ctx.state.recursive));
       } else if (act === 'start') {
         ctx.state.autoStarted = true;
         await ctx.api.startQueue();
@@ -268,8 +322,10 @@ export function createTasksView(ctx) {
       } else if (act === 'panel-toggle') {
         local.collapsed = !local.collapsed;
         applyPanel();
-      } else if (act === 'reveal') {
-        await shellAction(ctx.api.revealPath(btn.dataset.path));
+      } else if (act === 'locate-source') {
+        await locateAction(ctx.api.locate(btn.dataset.path || '', btn.dataset.fallback || ''));
+      } else if (act === 'locate-output') {
+        await locateAction(ctx.api.locate(btn.dataset.path || '', ''));
       } else if (act === 'delete-output') {
         await deleteOutputs([btn.dataset.id]);
       } else if (act === 'remove') {
@@ -456,14 +512,22 @@ export function createTasksView(ctx) {
     await refreshJobs();
   }
 
-  // double-click a row -> open the file
+  /**
+   * 双击一行 = 定位这一行的文件。
+   *
+   * 做完的行去输出，其余的去源文件 —— 这是一条独立规则，不是「点第一颗按钮」：
+   * 两个按钮都在，而双击只该有一个答案。源文件那一支要带上落点，否则双击一行被
+   * 搬走过的任务，开出来的是「文件不在这里了」。
+   */
   rowsEl.addEventListener('dblclick', async (e) => {
     const row = e.target.closest('tr[data-id]');
     if (!row) return;
     const job = ctx.state.jobs.find((j) => j.id === row.dataset.id);
     if (!job) return;
-    if (job.output && job.status === 'done') await shellAction(ctx.api.revealPath(job.output));
-    else await shellAction(ctx.api.revealPath(job.input));
+    const hasOutput = !!job.output && !job.outputDeleted
+      && (job.status === 'done' || job.status === 'warning');
+    if (hasOutput) await locateAction(ctx.api.locate(job.output, ''));
+    else await locateAction(ctx.api.locate(job.input, job.sourceMovedTo));
   });
 
   /**
@@ -603,18 +667,74 @@ export function createTasksView(ctx) {
   }
 
   /**
+   * The slice of the filtered queue that is on screen.
+   *
+   * pager.render is what clamps the page number, and it is asked on every repaint
+   * with the length of the list it is about to count -- so removing rows, or
+   * filtering them away, cannot leave the table showing a page past the end.
+   */
+  function pageJobs() {
+    const all = visibleJobs();
+    const page = pager.render(all.length);
+    const from = (page - 1) * pager.pageSize;
+    return all.slice(from, from + pager.pageSize);
+  }
+
+  /**
    * The queue keeps working on a job the filter is hiding, so the counter has to
    * show both numbers: a total that silently dropped to the filtered count would
-   * say the other files were gone.
+   * say the other files were gone. It counts the filtered list, not the page --
+   * "50 / 300 个任务" would say the other 250 had been filtered away.
    */
   function filterSummary(shown, total) {
     return local.statusFilter ? `${shown} / ${total} 个任务` : `${total} 个任务`;
   }
 
+  /**
+   * 填工具栏上那个方案下拉。
+   *
+   * 选项从 `ctx.state.filter.profiles` 来（后端已经保证了至少有一套），选中的是
+   * `filter.profile.name` —— 后端算出来的"此刻真正生效的那一套"。前端不按
+   * `active` 自己推一遍：那等于把"名字找不到时退回第一套"再写一遍，而
+   * 页面上说"当前是这套"、引擎按另一套跑，是最难查的一类不一致。
+   *
+   * 第一项是「不使用过滤」，值为空串 —— 下拉里只有这个值代表"不选哪套"，所以
+   * 禁用过一轮之后还能转回来选某一套，它自己没有被顶掉。`off` 时选中这一项，
+   * 标题写成"什么都不按"而不是拿某一套的条件去骗人。
+   *
+   * 当前这套说了什么放在 title 里：工具栏那一行已经有六个控件，再塞一整句条件进去会
+   * 把它挤成两行，而"这套里到底写了什么"是偶尔才要确认一次的事。
+   */
+  function syncProfileOptions() {
+    const st = ctx.state.filter || {};
+    const list = st.profiles || [];
+    if (!list.length) {
+      // 没有方案可列，但「不使用过滤」仍是一个真实的选择 —— 队列照收不误。
+      profileSelect.innerHTML = '<option value="">不使用过滤</option>';
+      profileSelect.disabled = false;
+      profileSelect.value = '';
+      profileSelect.title = '添加文件夹、拖入文件夹时不做任何筛选';
+      profileSelect.classList.remove('is-off');
+      return;
+    }
+    profileSelect.disabled = false;
+    const name = st.off ? '' : (st.profile?.name || list[0].name);
+    profileSelect.innerHTML = '<option value="">不使用过滤</option>' + list
+      .map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
+      .join('');
+    profileSelect.value = name;
+    profileSelect.title = st.off
+      ? '添加文件夹、拖入文件夹时不做任何筛选'
+      : `本次运行按「${name}」收\n${profileSummary(st.profile)}`;
+    // 「禁用」和「选中某一套」长得不一样：前者不做任何筛选，说错了的代价是收进来一堆
+    // 本该跳过的文件，得一眼看得出"这批是没过滤的"。
+    profileSelect.classList.toggle('is-off', !!st.off);
+  }
+
   function renderToolbar() {
     const s = ctx.state.stats || {};
     el.querySelector('[data-role=stat-total]').textContent
-      = filterSummary(local.renderedIds.length, ctx.state.jobs.length);
+      = filterSummary(local.filteredIds.length, ctx.state.jobs.length);
     const done = (s.done || 0) + (s.warning || 0);
     const doneChip = el.querySelector('[data-role=stat-done]');
     doneChip.hidden = done === 0;
@@ -623,6 +743,14 @@ export function createTasksView(ctx) {
     const bad = (s.failed || 0) + (s.canceled || 0);
     failChip.hidden = bad === 0;
     failChip.textContent = `失败 ${bad}`;
+
+    // 过滤方案：这颗下拉说的是"添加文件夹 / 拖入文件夹时按哪一套规则收"。规则本身
+    // 归「过滤」页管，这里只选一套 —— 一批目录连着加好几次的时候，每次都要重新填一遍
+    // 同样的条件才是真的烦。
+    //
+    // 用词：工具栏第二行那颗 chip 说的是模板的**匹配条件**（按体积、时长、扩展名排除
+    // 文件），所以这一颗叫「过滤」—— 两件事都会让文件不进队列，名字必须分得开。
+    syncProfileOptions();
 
     // The filter rules live on the template (or on the global one, for a template
     // that follows it), so the chip describes whatever this queue is bound to right
@@ -793,21 +921,55 @@ export function createTasksView(ctx) {
   }
 
   /**
+   * 定位源文件要试的两条路径：列表上那条，和它被搬走之后的落点。
+   *
+   * 顺序不能反。落点只在「已处理过的文件」真的搬过之后才有，而没搬过的行上列表
+   * 上那条路径本身就是答案；把落点放前面，等于让每一行都先去开一个多数时候不存在
+   * 的地方。
+   */
+  function sourcePaths(job) {
+    return { path: job.input, fallback: job.sourceMovedTo };
+  }
+
+  /**
+   * 是否已经有输出文件可以定位。
+   *
+   * 和 删除 用的是同一道门槛：还在排队或者正在写的行，输出路径只是一个打算写的
+   * 地方，点开只会落到「文件不在这里了」。
+   */
+  function canLocateOutput(job) {
+    return !!job.output && !job.outputDeleted
+      && !['pending', 'preparing', 'running'].includes(job.status);
+  }
+
+  function outputHint(job) {
+    if (job.outputDeleted) return '输出文件已删除';
+    if (!job.output) return '还没有输出文件';
+    if (['pending', 'preparing', 'running'].includes(job.status)) return '输出文件还没有生成';
+    return '定位输出文件';
+  }
+
+  /**
    * The row's buttons.
    *
-   * Shared with patchJob, because all three depend on the status and the fast path
+   * 定位两个 —— 源文件与输出 —— 各占一个，而不是共用一颗。共用的时候只能二选
+   * 一：原来那颗在状态允许时指向输出、否则指向源文件，于是一行做完之后就再也定
+   * 位不到源文件，而源文件恰恰是被「已处理过的文件」搬走的那一个。
+   *
+   * Shared with patchJob, because all of these depend on the status and the fast path
    * only writes the cells it knows about. A finished row still offering 定位源文件,
    * or a 删除 that stays grey after the output appeared, is a row that lies about what
    * can be done with it.
    */
   function actionsCell(job) {
-    // 输出已删除 means there is nothing out there to show, so 定位 falls back to the
-    // source rather than opening a path that no longer exists.
-    const revealOutput = (job.status === 'done' || job.status === 'warning') && !job.outputDeleted;
+    const src = sourcePaths(job);
+    const hasSource = !!(src.path || src.fallback);
     return `
-        ${revealOutput
-          ? `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.output)}" title="在资源管理器中显示">${icon('external', 'sm')}</button>`
-          : `<button class="btn btn--text btn--icon btn--sm" data-act="reveal" data-path="${esc(job.input)}" title="定位源文件">${icon('folderOpen', 'sm')}</button>`}
+        <button class="btn btn--text btn--icon btn--sm" data-act="locate-source"
+          data-path="${esc(src.path)}" data-fallback="${esc(src.fallback)}"
+          title="${esc(locateSourceHint(job))}" ${hasSource ? '' : 'disabled'}>${icon('folderOpen', 'sm')}</button>
+        <button class="btn btn--text btn--icon btn--sm" data-act="locate-output" data-path="${esc(job.output)}"
+          title="${esc(outputHint(job))}" ${canLocateOutput(job) ? '' : 'disabled'}>${icon('external', 'sm')}</button>
         <button class="btn btn--text btn--icon btn--sm" data-act="delete-output" data-id="${esc(job.id)}"
           title="${job.outputDeleted ? '输出文件已删除' : canDeleteOutput(job) ? '删除输出文件（任务保留在列表里）' : '没有可删除的输出文件'}"
           ${canDeleteOutput(job) ? '' : 'disabled'}>${icon('trash', 'sm')}</button>
@@ -851,9 +1013,11 @@ export function createTasksView(ctx) {
     // The toolbar acts on the queue, the table shows the filter's slice of it. Keeping
     // the two apart is the point: hiding the failed rows must not disable 重试.
     const all = ctx.state.jobs;
-    const jobs = visibleJobs();
-    emptyEl.hidden = jobs.length > 0;
-    if (!jobs.length) paintEmptyState(all.length);
+    const filtered = visibleJobs();
+    local.filteredIds = filtered.map((j) => j.id);
+    const jobs = pageJobs();
+    emptyEl.hidden = filtered.length > 0;
+    if (!filtered.length) paintEmptyState(all.length);
     const hasFinished = all.some((j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status));
     const canStart = all.some((j) => j.status === 'pending');
     el.querySelector('[data-act=start]').disabled = !canStart;
@@ -910,6 +1074,20 @@ export function createTasksView(ctx) {
     return true;
   }
 
+  /**
+   * 卡片标题行右端的定位按钮。
+   *
+   * 和行里那两颗共用同一组 data-act：面板和表格说的是同一件事，处理点击的地方
+   * 只能有一个。这里多出来的只是位置 —— 标题行比表格宽，说明文字能写完整。
+   */
+  function locateBtn(act, path, fallback, title, enabled) {
+    const ic = act === 'locate-source' ? 'folderOpen' : 'external';
+    return `<span class="spacer"></span>
+      <button class="btn btn--text btn--icon btn--sm" data-act="${act}"
+        data-path="${esc(path || '')}" data-fallback="${esc(fallback || '')}"
+        title="${esc(title)}" ${enabled ? '' : 'disabled'}>${icon(ic, 'sm')}</button>`;
+  }
+
   function renderDetails() {
     const job = currentJob();
     if (!job) {
@@ -919,9 +1097,11 @@ export function createTasksView(ctx) {
     const b = job.infoBefore;
     const a = job.infoAfter;
     const live = job.status === 'running' || job.status === 'preparing';
+    const src = sourcePaths(job);
+    const hasSource = !!(src.path || src.fallback);
     detailsEl.innerHTML = `
       <div class="detail-card">
-        <h4>源文件</h4>
+        <h4>源文件${locateBtn('locate-source', src.path, src.fallback, locateSourceHint(job), hasSource)}</h4>
         <dl class="kv">
           <dt>文件</dt><dd>${esc(job.inputName)}</dd>
           <dt>格式</dt><dd>${esc(b?.container || '—')}</dd>
@@ -931,10 +1111,12 @@ export function createTasksView(ctx) {
           <dt>时长</dt><dd>${esc(b ? humanDuration(b.duration) : '—')}</dd>
           <dt>大小</dt><dd>${esc(b ? humanSize(b.size) : '—')}</dd>
           <dt>码率</dt><dd>${esc(b ? bitrateText(b.bitRate) : '—')}</dd>
+          <dt>路径</dt><dd>${esc(job.input || '—')}</dd>
+          ${job.sourceMovedTo ? `<dt>已移动</dt><dd>${esc(job.sourceMovedTo)}</dd>` : ''}
         </dl>
       </div>
       <div class="detail-card">
-        <h4>输出</h4>
+        <h4>输出${locateBtn('locate-output', job.output, '', outputHint(job), canLocateOutput(job))}</h4>
         <dl class="kv">
           <dt>文件</dt><dd>${esc(job.outputName || '—')}</dd>
           <dt>模板</dt><dd>${esc(job.templateName || '—')}</dd>
@@ -944,6 +1126,7 @@ export function createTasksView(ctx) {
           <dt>码率</dt><dd>${esc(a ? bitrateText(a.bitRate) : '—')}</dd>
           <dt>压缩比</dt><dd>${b && a ? esc(`${(a.size / b.size * 100).toFixed(1)}%`) : '—'}</dd>
           <dt>耗时</dt><dd>${esc(humanElapsed(job.elapsedMs))}</dd>
+          <dt>路径</dt><dd>${esc(job.output || '—')}</dd>
         </dl>
       </div>
       <div class="detail-card">
@@ -973,10 +1156,10 @@ export function createTasksView(ctx) {
       const cb = tr.querySelector('input[type=checkbox]');
       if (cb) cb.checked = local.checked.has(tr.dataset.id);
     });
-    // "Alive" means rendered, not merely queued: with a filter up, a checked row the
-    // user cannot see would still be counted in the bulk bar and would still be
-    // deleted by 删除输出. Dropping it keeps the count and the table telling the same
-    // story.
+    // "Alive" means rendered, not merely queued: behind a filter, or on another
+    // page, a checked row the user cannot see would still be counted in the bulk bar
+    // and would still be deleted by 删除输出. Dropping it keeps the count and the
+    // table telling the same story. 全选 follows the same rule -- it means this page.
     const alive = new Set(local.renderedIds);
     for (const id of [...local.checked]) if (!alive.has(id)) local.checked.delete(id);
     const all = el.querySelector('[data-role=check-all]');
@@ -1205,17 +1388,25 @@ export function createTasksView(ctx) {
       else showHeldLog();
     },
     onTemplatesChanged() { syncTemplateOptions(); },
+    // 「过滤」页存了方案、删了方案、或者把某套设成了默认：工具栏那个下拉的选项和
+    // 摘要都得跟着变，否则它会一直列着上一次打开时的方案名。
+    onFilterChanged() { renderToolbar(); },
     onJobsChanged() {
       renderJobs();
       if (local.tab === 'log' && ctx.state.selectedJobId && !logEl.textContent.trim()) loadLog(ctx.state.selectedJobId);
     },
     onJobUpdate(job) {
-      const visible = local.renderedIds.includes(job.id);
+      const onPage = local.renderedIds.includes(job.id);
       const wanted = matchesFilter(job);
+      const wasFiltered = local.filteredIds.includes(job.id);
       // A status change can move a row in or out of the current filter, and only a
       // repaint can express that. Everything else is patched in place.
-      if (visible !== wanted) { renderJobs(); return; }
-      if (!visible) return; // filtered out, and still filtered out
+      if (wanted !== wasFiltered) { renderJobs(); return; }
+      // Filtered out, or simply on another page: either way there is no row to
+      // patch, and rebuilding the table for a row nobody can see is what made a
+      // long queue crawl -- progress arrives for every running job, on screen or
+      // not.
+      if (!onPage) return;
       if (!patchJob(job)) renderJobs();
     },
     onStats() { renderToolbar(); },

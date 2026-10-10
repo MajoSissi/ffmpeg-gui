@@ -1,11 +1,11 @@
 import { icon } from '../icons.js';
 import {
-  esc, selectHtml, field, switchRow, toast, confirmDialog, openModal, closeModal, copyText, shellAction,
-  commandHtml,
+  esc, selectHtml, field, switchInline, toast, confirmDialog, openModal, closeModal, copyText,
+  commandHtml, createListSelection,
 } from '../ui.js';
 import {
   SECTIONS, sectionHead, followHint, perfBody, filterBody, problemsBody, outputBody,
-  containerField, existingBody,
+  containerField, existingBody, dirSpecOf, dirParts, pathCheckHtml,
 } from './sections.js';
 
 const GLOBAL_ID = 't-global';
@@ -13,22 +13,23 @@ const GLOBAL_ID = 't-global';
 export function createTemplatesView(ctx) {
   const el = document.createElement('section');
   el.className = 'page';
-  // The list column is one piece: title, search, and rows share a single surface with
-  // no rule between them. Copying a template is a row action (right-click, or the
-  // footer), not a toolbar item -- having it up here made one click act on whatever
-  // happened to be selected.
+  // The list column is one piece: search, new, and rows share a single surface with no
+  // rule between them. Copying a template is a row action (right-click, or the footer),
+  // not a toolbar item -- having it up here made one click act on whatever happened to
+  // be selected.
+  //
+  // The head is one row: the search box and the one button that creates things. The
+  // whole-column tools (import / export / restore) used to sit here too, but two of the
+  // three were one-shot file dialogs and the third deleted everything on a mis-click --
+  // three permanent icons for actions nobody does twice.
   el.innerHTML = `
     <div class="split">
       <aside class="tpl-list">
         <div class="tpl-list__head">
-          <div class="tpl-list__bar">
-            <button class="btn btn--text btn--icon btn--sm" data-act="import" title="从文件导入模板">${icon('upload', 'sm')}</button>
-            <button class="btn btn--text btn--icon btn--sm" data-act="export" title="导出全部模板">${icon('download', 'sm')}</button>
-            <button class="btn btn--text btn--icon btn--sm" data-act="reset-builtin" title="恢复内置模板">${icon('refresh', 'sm')}</button>
-            <div class="spacer"></div>
-            <button class="btn btn--tonal btn--sm" data-act="new">${icon('add', 'sm')}新建模板</button>
+          <div class="tpl-list__search">
+            <input class="input" placeholder="搜索模板" data-role="search">
+            <button class="btn btn--tonal btn--icon" data-act="new" title="新建模板">${icon('add')}</button>
           </div>
-          <input class="input" placeholder="搜索模板" data-role="search">
         </div>
         <div class="tpl-list__items" data-role="list"></div>
       </aside>
@@ -55,6 +56,15 @@ export function createTemplatesView(ctx) {
   let keyword = '';
   let dragId = '';        // template being dragged, for the reorder affordance
 
+  /**
+   * 列表多选。手势与判定都在 `ui.js` 的 `createListSelection` 里，和「过滤」页共用同一句
+   * ——两页的列表长得一样，能勾选的手势不一样的话，用户得学两遍。
+   *
+   * 勾着的一串和"正在编辑的那一行"分开存：右侧面板显示后者，右键菜单里的复制作用在
+   * 后者身上，「删除 N 项」作用在整串上。
+   */
+  const selection = createListSelection(() => renderList());
+
   const opts = () => ctx.state.options || {};
 
   /* ------------------------------------------------------------- list */
@@ -70,14 +80,18 @@ export function createTemplatesView(ctx) {
    */
   function renderList() {
     const g = ctx.state.templates.find((t) => t.global);
-    const items = ctx.state.templates
-      .filter((t) => !t.global)
-      .filter((t) => !keyword
-        || t.name.toLowerCase().includes(keyword)
-        || (t.description || '').toLowerCase().includes(keyword));
+    const items = visibleTpls();
+
+    // 勾选高亮和"正在编辑"高亮分两件事（`.is-checked` / `.is-active`）：Ctrl 点出来的
+    // 一串里只有最后点的那一行在右边显示着，而整串都要能看出是选中的。
+    const rowCls = (id) => [
+      'tpl-row',
+      selection.has(id) ? 'is-checked' : '',
+      id === ctx.state.currentTemplateId ? 'is-active' : '',
+    ].filter(Boolean).join(' ');
 
     const head = g ? `
-      <div class="tpl-row tpl-row--global ${g.id === ctx.state.currentTemplateId ? 'is-active' : ''}" data-id="${esc(g.id)}">
+      <div class="${rowCls(g.id)} tpl-row--global" data-id="${esc(g.id)}">
         <button class="tpl-item" data-global="${esc(g.id)}" title="处理性能配置，输出文件处理">
           <span class="tpl-item__name">${icon('tune', 'sm')}<span class="tpl-item__label">基本配置</span></span>
           <span class="tpl-item__desc">处理性能配置，输出文件处理</span>
@@ -86,7 +100,7 @@ export function createTemplatesView(ctx) {
       ${items.length ? '<div class="tpl-list__divider"></div>' : ''}` : '';
 
     listEl.innerHTML = head + (items.map((t) => `
-      <div class="tpl-row ${t.id === ctx.state.currentTemplateId ? 'is-active' : ''}" data-id="${esc(t.id)}"
+      <div class="${rowCls(t.id)}" data-id="${esc(t.id)}"
         draggable="true" title="拖动可调整顺序">
         <button class="tpl-item">
           <span class="tpl-item__name">${esc(t.name)}${t.builtin ? '<span class="badge">内置</span>' : ''}</span>
@@ -96,6 +110,26 @@ export function createTemplatesView(ctx) {
       </div>`).join('')
       || (g ? '' : '<div class="hint" style="padding:14px">没有匹配的模板</div>'));
   }
+
+  /**
+   * 列表里**当前可见**的那些模板（全局那一套永远排第一，不参与搜索和勾选）。
+   *
+   * 搜索、勾选、Shift 的范围三处都问它 —— 各写一遍筛选条件，第三处就会和前两处不一样，
+   * 而"搜完再 Shift 连选"是用户最常走的一条路。
+   */
+  function visibleTpls() {
+    return ctx.state.templates
+      .filter((t) => !t.global)
+      .filter((t) => !keyword
+        || t.name.toLowerCase().includes(keyword)
+        || (t.description || '').toLowerCase().includes(keyword));
+  }
+
+  /** 可见行 id 的顺序。全局那一套排在最前（它在列表里就是第一行）。 */
+  const visibleIds = () => {
+    const g = ctx.state.templates.find((t) => t.global);
+    return (g ? [g.id] : []).concat(visibleTpls().map((t) => t.id));
+  };
 
   /** The template whose values fill in every blank. Never null. */
   function globalTemplate() {
@@ -132,6 +166,11 @@ export function createTemplatesView(ctx) {
     // The global template owns the defaults; on a regular template the three
     // pointer sections may be nil, which is the "follow" state.
     const g = isGlobal();
+
+    // 路径测试填的是"我正在看哪个文件"，不是模板的一部分，所以重画一遍表单不该把它
+    // 丢掉 —— 切一下「与全局不同」就白填一次路径，比没有这个功能更烦人。必须在
+    // innerHTML 被换掉之前读。
+    const keepTest = formEl.querySelector('[data-role=path-test]')?.value || '';
 
     // The basic-configuration template has no "基本信息" block: it has no name to
     // edit, no container of its own, and no per-template description -- the list
@@ -187,9 +226,9 @@ ${g ? '' : `      <div class="section">
           ${field('对齐倍数', `<input class="input" type="number" name="multipleOf" value="${r.multipleOf ?? 2}" placeholder="2">`, '宽高自动对齐到该倍数')}
           ${field('补边颜色', selectHtml('padColor', o.padColors || [], r.padColor || 'black'))}
         </div>
-        <div class="grid grid--3" style="margin-top:10px">
-          <label class="check"><input type="checkbox" name="onlyLarger"${r.onlyLarger ? ' checked' : ''}>只缩小，不放大</label>
-          <label class="check"><input type="checkbox" name="padToTarget"${r.padToTarget ? ' checked' : ''}>补边到目标尺寸（不裁切）</label>
+        <div class="switch-strip" style="margin-top:12px">
+          ${switchInline('只缩小，不放大', 'onlyLarger', !!r.onlyLarger)}
+          ${switchInline('补边到目标尺寸（不裁切）', 'padToTarget', !!r.padToTarget)}
         </div>
       </div>
 
@@ -210,12 +249,12 @@ ${g ? '' : `      <div class="section">
 
       <div class="section">
         <div class="section__head">${icon('queue', 'sm')}<h3>容器与流</h3><div class="spacer"></div>
-          <span class="hint">勾选项才会写进命令</span></div>
-        <div class="grid grid--3">
-          <label class="check" title="未勾选时命令里会出现 -sn"><input type="checkbox" name="mapAll"${d.mapAll ? ' checked' : ''}>保留全部流（字幕、多音轨、附件）</label>
-          <label class="check"><input type="checkbox" name="fastStart"${d.fastStart ? ' checked' : ''}>faststart（MP4 网页快速起播）</label>
-          <label class="check"><input type="checkbox" name="stripMetadata"${d.stripMetadata ? ' checked' : ''}>清除元数据</label>
-          <label class="check"><input type="checkbox" name="stripChapters"${d.stripChapters ? ' checked' : ''}>清除章节</label>
+          <span class="hint">只有打开的项才会写进命令</span></div>
+        <div class="switch-strip">
+          ${switchInline('保留全部流（字幕、多音轨、附件）', 'mapAll', !!d.mapAll, '关闭时命令里会出现 -sn')}
+          ${switchInline('faststart（MP4 网页快速起播）', 'fastStart', !!d.fastStart)}
+          ${switchInline('清除元数据', 'stripMetadata', !!d.stripMetadata)}
+          ${switchInline('清除章节', 'stripChapters', !!d.stripChapters)}
         </div>
         <div class="grid grid--3" style="margin-top:10px">
           ${field('混流队列上限', `<input class="input" type="number" min="0" name="maxMuxQueue" value="${d.maxMuxQueue > 0 ? d.maxMuxQueue : ''}" placeholder="留空 = 默认">`,
@@ -254,13 +293,17 @@ ${g ? '' : `      <div class="section">
 
 `}
 ${inheritableSection('perf', d, g, o, (s) => perfBody(s, o, ctx.state.runtime?.cpus || 0))}
-${inheritableSection('output', d, g, o, (t) => outputBody(t, o, globalTemplate()))}
+${inheritableSection('output', d, g, o, outputBody)}
 ${inheritableSection('existing', d, g, o, existingBody)}
 ${inheritableSection('filter', d, g, o, filterBody)}
 ${inheritableSection('problems', d, g, o, problemsBody)}
 `;
 
+    // 路径测试填的是"我正在看哪个文件"，不是模板的一部分，所以重画一遍表单不该把它
+    // 丢掉 —— 切一下「与全局不同」就白填一次路径，比没有这个功能更烦人。规则可能刚
+    // 被改过，所以值还要重算一遍。
     bindForm();
+    restorePathTest(keepTest);
     updateStatus();
   }
 
@@ -277,7 +320,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     // 输出格式 is decided per template rather than inherited, so it stays editable
     // even while the rest of the section is following the global one. Hiding it
     // behind the switch would take away the one control most templates need. When
-    // the section IS expanded the body renders it next to 命名模板, so the
+    // the section IS expanded the body renders it next to 输出文件名称, so the
     // standalone row only exists in the follow state -- otherwise the same select
     // would appear twice and the two copies would drift apart.
     const own = key === 'output' && !g && !active
@@ -286,7 +329,9 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     return `<div class="section">
       ${sectionHead(key, active, { global: g })}
       ${own}
-      ${active ? body(sectionValue(key, d), o) : `<div class="follow">${icon('swap', 'sm')}${esc(followHint(key, globalTemplate()))}</div>`}
+      ${active
+        ? body(sectionValue(key, d), o)
+        : `<div class="follow">${icon('swap', 'sm')}${esc(followHint(key, globalTemplate()))}</div>`}
     </div>`;
   }
 
@@ -299,7 +344,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     if (!list.length) return `<div class="hint" style="padding:8px 0">还没有额外参数</div>`;
     return `<table class="arg-table" style="width:100%">
       ${list.map((a, i) => `<tr data-kind="${kind}" data-i="${i}">
-        <td style="width:20px"><label class="check"><input type="checkbox" data-arg="enabled"${a.enabled ? ' checked' : ''}></label></td>
+        <td style="width:46px">${switchInline('', '', a.enabled, '这一行参数是否写进命令', 'data-arg="enabled"')}</td>
         <td style="width:34%"><input class="input mono" data-arg="flag" value="${esc(a.flag || '')}" placeholder="-ss"></td>
         <td><input class="input mono" data-arg="value" value="${esc(a.value || '')}" placeholder="值"></td>
         <td><input class="input" data-arg="comment" value="${esc(a.comment || '')}" placeholder="备注"></td>
@@ -341,13 +386,11 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
           if (c.checked) {
             const g = globalTemplate();
             draft.outputOverride = true;
-            draft.outMode = g.outMode || '';
-            draft.outDir = g.outDir || '';
-            draft.outSuffix = g.outSuffix || '';
+            draft.outDirSpec = dirSpecOf(g.outDirSpec);
             draft.outPattern = g.outPattern || '';
           } else {
             draft.outputOverride = false;
-            for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern']) delete draft[k];
+            for (const k of ['outDirSpec', 'outPattern']) delete draft[k];
           }
         } else if (c.checked) {
           draft[key] = seedSection(key, globalTemplate());
@@ -358,6 +401,13 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         renderForm();
       });
     });
+    // 变量表里的每一颗按钮点一下就复制它自己。这里**不**往输入框里插：光标在哪、
+    // 要不要覆盖选中的一段，只有用户知道；复制给他，他自己决定贴哪里。
+    formEl.querySelectorAll('[data-act=copy-var]').forEach((b) => b.addEventListener('click', async () => {
+      const token = b.dataset.var || '';
+      const ok = await copyText(token);
+      toast(ok ? `已复制 ${token}` : `复制失败：${token}`, ok ? 'success' : 'error', 1600);
+    }));
     formEl.querySelectorAll('[data-act=pick-dir]').forEach((b) => b.addEventListener('click', async () => {
       const input = formEl.querySelector(`[name="${b.dataset.target}"]`);
       if (!input) return;
@@ -365,6 +415,25 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       if (!dir) return;
       input.value = dir;
       input.dispatchEvent(new Event('input', { bubbles: true }));
+    }));
+    // 路径测试。输入框改一下就重算（防抖，不必每敲一个字符问一次后端），选完文件
+    // 立刻算。它读的是 draft，所以看到的就是屏幕上这套还没保存的规则。
+    const testInput = formEl.querySelector('[data-role=path-test]');
+    if (testInput) {
+      testInput.addEventListener('input', schedulePathTest);
+      // Enter / 失焦不等防抖：用户已经说"就是它"了。
+      testInput.addEventListener('change', () => {
+        clearTimeout(pathTestTimer);
+        runPathTest();
+      });
+    }
+    formEl.querySelectorAll('[data-act=pick-test-file]').forEach((b) => b.addEventListener('click', async () => {
+      const p = await ctx.api.pickFile();
+      if (!p) return;
+      const input = formEl.querySelector('[data-role=path-test]');
+      if (!input) return;
+      input.value = p;
+      runPathTest();
     }));
     formEl.querySelectorAll('[data-act=add-in]').forEach((b) => b.addEventListener('click', () => {
       collectArgs('in'); collectArgs('out');
@@ -412,8 +481,8 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     if (key === 'output') {
       return {
         outputOverride: true,
-        outMode: src.outMode || '', outDir: src.outDir || '',
-        outSuffix: src.outSuffix || '', outPattern: src.outPattern || '',
+        outDirSpec: dirSpecOf(src.outDirSpec),
+        outPattern: src.outPattern || '',
       };
     }
     if (key === 'perf') {
@@ -430,7 +499,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       const e = (src.existing || {});
       return {
         action: e.action || 'keep',
-        dest: { ...(e.dest || { mode: '', dir: '', suffix: '' }) },
+        dir: dirSpecOf(e.dir),
         pattern: e.pattern || '',
         overwrite: !!e.overwrite,
       };
@@ -443,7 +512,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         minDuration: f.minDuration || 0, maxDuration: f.maxDuration || 0,
         includeExts: [...(f.includeExts || [])], excludeExts: [...(f.excludeExts || [])],
         action: f.action || 'keep',
-        dest: { ...(f.dest || { mode: '', dir: '', suffix: '' }) },
+        dir: dirSpecOf(f.dir),
         renamePattern: f.renamePattern || '',
         overwrite: !!f.overwrite,
       };
@@ -451,10 +520,10 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     const p = (src.problems || {});
     return {
       errorAction: p.errorAction || 'keep',
-      errorDest: { ...(p.errorDest || { mode: '', dir: '', suffix: '' }) },
+      errorDir: dirSpecOf(p.errorDir),
       errorPattern: p.errorPattern || '',
       warningAction: p.warningAction || 'mark',
-      warningDest: { ...(p.warningDest || { mode: '', dir: '', suffix: '' }) },
+      warningDir: dirSpecOf(p.warningDir),
       warningPattern: p.warningPattern || '',
     };
   }
@@ -462,13 +531,15 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
   /** Every field name that belongs to one of the inheritable sections. */
   const SECTION_FIELDS = {
     perf: ['pConcurrency', 'pThreads', 'pRetryCount', 'pLogLevel', 'pIdlePriority', 'pDeleteOnFail'],
-    output: ['outMode', 'outDir', 'outSuffix', 'outPattern'],
-    existing: ['exAction', 'exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
+    output: ['outMode', 'outDir', 'outPrefix', 'outSuffix', 'outKeepTree', 'outPattern'],
+    existing: ['exAction', 'exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
     filter: ['fMinSizeMB', 'fMaxSizeMB', 'fMinDuration', 'fMaxDuration', 'fMinLongEdge', 'fMaxLongEdge',
-      'fIncludeExts', 'fExcludeExts', 'fAction', 'fDestMode', 'fDestDir', 'fDestSuffix',
+      'fIncludeExts', 'fExcludeExts', 'fAction', 'fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree',
       'fRenamePattern', 'fOverwrite'],
-    problems: ['prErrorAction', 'prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern',
-      'prWarningAction', 'prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
+    problems: ['prErrorAction', 'prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix',
+      'prErrorKeepTree', 'prErrorPattern',
+      'prWarningAction', 'prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
+      'prWarningKeepTree', 'prWarningPattern'],
   };
 
   function sectionOf(name) {
@@ -529,42 +600,73 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       copy: [],
       disable: [],
     },
-    outMode: {
-      same: [], sibling: ['outSuffix'], custom: ['outDir'], mirror: ['outDir'],
-    },
     // The destination only means anything once the action moves or copies the
     // file; 「留在原处」 would leave every one of these fields silently ignored.
     exAction: {
       keep: [],
-      move: ['exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
-      copy: ['exDestMode', 'exDestDir', 'exDestSuffix', 'exPattern', 'exOverwrite'],
-    },
-    exDestMode: {
-      same: [], sibling: ['exDestSuffix'], custom: ['exDestDir'], mirror: ['exDestDir'],
+      move: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
+      copy: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
     },
     fAction: {
       keep: [],
-      move: ['fDestMode', 'fDestDir', 'fDestSuffix', 'fRenamePattern', 'fOverwrite'],
-      copy: ['fDestMode', 'fDestDir', 'fDestSuffix', 'fRenamePattern', 'fOverwrite'],
-    },
-    fDestMode: {
-      same: [], sibling: ['fDestSuffix'], custom: ['fDestDir'], mirror: ['fDestDir'],
+      move: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
+      copy: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
     },
     prErrorAction: {
       keep: [], mark: [],
-      move: ['prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern'],
-      copy: ['prErrorDestMode', 'prErrorDestDir', 'prErrorDestSuffix', 'prErrorPattern'],
-    },
-    prErrorDestMode: {
-      same: [], sibling: ['prErrorDestSuffix'], custom: ['prErrorDestDir'], mirror: ['prErrorDestDir'],
+      move: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree', 'prErrorPattern'],
+      copy: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree', 'prErrorPattern'],
     },
     prWarningAction: {
       keep: [], mark: [],
-      move: ['prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
-      copy: ['prWarningDestMode', 'prWarningDestDir', 'prWarningDestSuffix', 'prWarningPattern'],
+      move: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
+        'prWarningKeepTree', 'prWarningPattern'],
+      copy: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
+        'prWarningKeepTree', 'prWarningPattern'],
     },
-    prWarningDestMode: {
-      same: [], sibling: ['prWarningDestSuffix'], custom: ['prWarningDestDir'], mirror: ['prWarningDestDir'],
+    // 一段目录的哪几个框有意义，由「输出方式」决定：目录只对「自定义目录」有用，
+    // 前缀 / 后缀只对「同级目录」有用，「原目录」一个都用不上。灰掉而不是藏起来
+    // —— 藏起来的话用户得先猜"我这一版还有没有别的东西可填"。
+    //
+    // 主输出段没有动作开关在上面，所以这里只列出它那一份；`allowed` 里没有的字段
+    // 谁都不去动它。
+    //
+    // 「保留目录结构」在自定义目录和「同级目录」下都有意义：这两种方式的落点在源
+    // 目录**上方**，文件所在的那几层要靠它接回去。「同级顶层目录」的锚就是文件自己
+    // （相对自己是空路径），「原目录」的落点也是源目录本身 —— 两者都靠
+    // dirSpecHasRoom 判掉，不必在这里各写一遍。
+    //
+    // 两个同级的前缀 / 后缀字段是一样的（只有锚不同），所以下面每个 sibling 都
+    // 跟着配一份 siblingTop，漏一个就是那一段的两个框在该方式下灰着。
+    outMode: {
+      same: [],
+      custom: ['outDir', 'outKeepTree'],
+      sibling: ['outPrefix', 'outSuffix', 'outKeepTree'],
+      siblingTop: ['outPrefix', 'outSuffix'],
+    },
+    exMode: {
+      same: [],
+      custom: ['exDir', 'exKeepTree'],
+      sibling: ['exPrefix', 'exSuffix', 'exKeepTree'],
+      siblingTop: ['exPrefix', 'exSuffix'],
+    },
+    fMode: {
+      same: [],
+      custom: ['fDir', 'fKeepTree'],
+      sibling: ['fPrefix', 'fSuffix', 'fKeepTree'],
+      siblingTop: ['fPrefix', 'fSuffix'],
+    },
+    prErrorMode: {
+      same: [],
+      custom: ['prErrorDir', 'prErrorKeepTree'],
+      sibling: ['prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree'],
+      siblingTop: ['prErrorPrefix', 'prErrorSuffix'],
+    },
+    prWarningMode: {
+      same: [],
+      custom: ['prWarningDir', 'prWarningKeepTree'],
+      sibling: ['prWarningPrefix', 'prWarningSuffix', 'prWarningKeepTree'],
+      siblingTop: ['prWarningPrefix', 'prWarningSuffix'],
     },
   };
 
@@ -583,14 +685,90 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       const c = formEl.querySelector(`[name="${n}"]`);
       if (!c) continue;
       c.disabled = !ok;
-      const box = c.closest('.field') || c.closest('.check');
+      const box = c.closest('.field') || c.closest('.check') || c.closest('.switch-row');
       if (box) box.classList.toggle('is-disabled', !ok);
     }
+    // 「保留目录结构」是两个条件都得满足：动作得真的搬文件（allowed），而方式得
+    // 不是「原目录」—— 那种方式的落点就是源目录本身，子树已经在那里了。
+    // `allowed` 里没有这一项说明上面的动作开关没管它（主输出段），undefined 就是
+    // "没人禁止"。
+    for (const stem of ['out', 'f', 'ex', 'prError', 'prWarning']) {
+      const tree = formEl.querySelector(`[name="${stem}KeepTree"]`);
+      if (!tree) continue;
+      const ok = allowed.get(`${stem}KeepTree`) !== false && !!dirSpecHasRoom(stem);
+      tree.disabled = !ok;
+      const row = tree.closest('.switch-row');
+      if (row) row.classList.toggle('is-disabled', !ok);
+    }
+  }
+
+  /**
+   * 这一段的方式能不能长出子树。
+   *
+   * 「原目录」和「同级顶层目录」都不能：前者的落点就是源目录本身，后者的锚也是文件
+   * 自己所在的目录（相对自己是空路径）—— 结构要么已经在那里，要么压根没有可以
+   * 往回接的一段。另外两种方式的落点在源目录**上方**，文件所在的那几层要靠这个开关
+   * 接回去；关掉的话整棵树的文件贴平到同一个目录里，重名就得靠 _1、_2 挡。
+   */
+  function dirSpecHasRoom(stem) {
+    const box = formEl.querySelector(`[name="${stem}Mode"]`);
+    return !!box && box.value !== 'same' && box.value !== 'siblingTop';
   }
 
   function onFieldChange(e) {
     applyFieldChange(e);
     refreshEnabled();
+    schedulePathTest();
+  }
+
+  /* ------------------------------------------------------------ 路径测试 */
+
+  // 每次请求一个序号：输入框是防抖的，用户改得快时可能有两条在路上，先发的那条
+  // 后回来就会把新结果盖掉。
+  let pathTestSeq = 0;
+  let pathTestTimer = 0;
+
+  /**
+   * 改了规则就把测试重算一遍。
+   *
+   * 不重算的话，下面那两条路径是上一版规则的答案 —— 而它存在的全部意义就是"面板
+   * 说的和真跑一遍一致"，一个会过期的答案比没有这个面板更糟。
+   */
+  function schedulePathTest() {
+    clearTimeout(pathTestTimer);
+    pathTestTimer = setTimeout(runPathTest, 250);
+  }
+
+  /**
+   * 按屏幕上的规则算一遍那个输入文件会写到哪。
+   *
+   * 后端只按路径推算、不读文件，所以这件事可以跟着打字跑。空路径不是错误：用户刚
+   * 清空输入框，结果区回到"等你填"就好 —— 弹一条红字只会像出了毛病。
+   */
+  async function runPathTest() {
+    const out = formEl.querySelector('[data-role=path-test-out]');
+    const input = formEl.querySelector('[data-role=path-test]');
+    if (!out || !input) return;
+    const path = input.value.trim();
+    const seq = ++pathTestSeq;
+    if (!path) {
+      out.innerHTML = '<div class="pathtest__note">填一个输入文件，这里给出输出目录和输出文件。</div>';
+      return;
+    }
+    try {
+      const check = await ctx.api.previewPaths(draft || {}, path);
+      if (seq === pathTestSeq) out.innerHTML = pathCheckHtml(check);
+    } catch (e) {
+      if (seq === pathTestSeq) out.innerHTML = pathCheckHtml(null, e?.message || String(e));
+    }
+  }
+
+  /** 重画表单之后把测试路径放回去，并按新规则重算一遍。 */
+  function restorePathTest(path) {
+    const input = formEl.querySelector('[data-role=path-test]');
+    if (!input || !path) return;
+    input.value = path;
+    runPathTest();
   }
 
   function applyFieldChange(e) {
@@ -631,10 +809,17 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     const s = draft[sec] || (draft[sec] = seedSection(sec, globalTemplate()));
     const num = (x) => Number(x || 0);
     const exts = (x) => String(x).split(',').map((y) => y.trim()).filter(Boolean);
+    // 一段目录的五个控件写的是同一段数据，所以合成一个入口：分成五支的话，
+    // "改了前缀但方式没跟上"就成了只有用户能发现的 bug。控件名 -> DirSpec 字段的
+    // 对应关系是把 sections.js 的 dirParts 反过来查，两边不可能各写一份。
+    const stem = name.replace(/(Mode|Dir|Prefix|Suffix|KeepTree)$/, '');
+    const dirKey = Object.fromEntries(Object.entries(dirParts(`${stem}Dir`)).map(([k, v]) => [v, k]));
+    const withDir = (spec) => ({ ...dirSpecOf(spec), [dirKey[name]]: v });
 
     if (sec === 'output') {
       // Flat fields on the draft itself, named the same as the template's JSON keys.
-      draft[name] = v;
+      if (name in dirKey) draft.outDirSpec = withDir(draft.outDirSpec);
+      else draft[name] = v;
       draft.outputOverride = true;
       return;
     }
@@ -652,7 +837,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         case 'exAction': s.action = v; break;
         case 'exPattern': s.pattern = v; break;
         case 'exOverwrite': s.overwrite = v; break;
-        default: s.dest = { ...(s.dest || {}), [destKey(name)]: v };
+        default: s.dir = withDir(s.dir);
       }
       return;
     }
@@ -669,22 +854,16 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         case 'fAction': s.action = v; break;
         case 'fRenamePattern': s.renamePattern = v; break;
         case 'fOverwrite': s.overwrite = v; break;
-        default: s.dest = { ...(s.dest || {}), [destKey(name)]: v };
+        default: s.dir = withDir(s.dir);
       }
       return;
     }
-    const isError = name.startsWith('prError');
-    const d = isError ? (s.errorDest = s.errorDest || {}) : (s.warningDest = s.warningDest || {});
     if (name === 'prErrorAction') s.errorAction = v;
     else if (name === 'prWarningAction') s.warningAction = v;
     else if (name === 'prErrorPattern') s.errorPattern = v;
     else if (name === 'prWarningPattern') s.warningPattern = v;
-    else d[destKey(name)] = v;
-  }
-
-  /** prErrorDestMode -> mode, fDestSuffix -> suffix, ... */
-  function destKey(name) {
-    return name.slice(name.lastIndexOf('Dest') + 4).toLowerCase();
+    else if (name.startsWith('prError')) s.errorDir = withDir(s.errorDir);
+    else s.warningDir = withDir(s.warningDir);
   }
 
   function markDirty() {
@@ -692,11 +871,17 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     updateStatus();
   }
 
+  /**
+   * 左下角只说"有没有未保存的改动"。
+   *
+   * 原来这里还挂着"更新于 ……"的时间戳：保存的时间戳存在模板里，但除了这里没有第二个
+   * 地方会显示它 —— 列表里看的是名字和摘要，右边看的是值。删掉之后 statusEl 只剩
+   * 脏标记这一个职责，也就只需要在 markDirty 和保存成功时各写一次。
+   */
   function updateStatus() {
-    const when = draft?.updatedAt ? ` · 更新于 ${new Date(draft.updatedAt * 1000).toLocaleString('zh-CN')}` : '';
     statusEl.innerHTML = dirty
       ? `${icon('dot', 'sm')} 有未保存的修改`
-      : `${icon('checkCircle', 'sm')} 已保存${when}`;
+      : `${icon('checkCircle', 'sm')} 已保存`;
     statusEl.style.color = dirty ? 'var(--warn)' : 'var(--on-surface-dim)';
     // The global template produces no command of its own and is neither
     // deletable nor duplicable, so those controls do not apply to it.
@@ -710,10 +895,15 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
   /* -------------------------------------------------------------- actions */
 
   /**
-   * Right-click on a row. The native menu is gone with the frame, so the two actions
-   * that belong to *a* template rather than to the page live here: duplicate and
-   * delete. Right-clicking selects the row first -- acting on a template the user has
-   * not highlighted is the fastest way to delete the wrong one.
+   * Right-click on a row. The native menu is gone with the frame, so the actions that
+   * belong to *a* template rather than to the page live here: duplicate and delete.
+   * Right-clicking a row that is not part of the current selection selects it first --
+   * acting on a template the user has not highlighted is the fastest way to delete the
+   * wrong one. Right-clicking **inside** the selection keeps the whole selection, so a
+   * multi-row delete does not collapse to one row first.
+   *
+   * 多选时菜单只剩「删除 N 项」：勾一串出来不是为了"复制"—— 一个模板复制一份就多一份，
+   * 复制一串只会得到一串几乎一样的模板，而"一次删掉它们"才是勾这一串的用途。
    */
   listEl.addEventListener('contextmenu', async (e) => {
     const row = e.target.closest('.tpl-row');
@@ -721,21 +911,78 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     e.preventDefault();
     const t = ctx.state.templates.find((x) => x.id === row.dataset.id);
     if (!t) return;
-    if (ctx.state.currentTemplateId !== t.id) {
-      if (dirty && !(await confirmDialog('放弃修改？', '当前模板有未保存的修改，切换后将丢失。', '放弃修改', true))) return;
+    if (!selection.has(t.id)) {
+      if (ctx.state.currentTemplateId !== t.id
+        && dirty
+        && !(await confirmDialog('放弃修改？', '当前模板有未保存的修改，切换后将丢失。', '放弃修改', true))) return;
+      selection.click(visibleIds(), t.id, e);
       selectTemplate(t.id);
     }
     if (t.global) return;   // neither duplicating nor deleting the defaults is meaningful
+    const many = deletableIds().length > 1;
     ctx.showContextMenu(e.clientX, e.clientY, [
-      { label: '复制模板', icon: 'copy', onClick: () => duplicateTemplate(t.id) },
-      {
-        label: '删除模板',
+      ...(many ? [{
+        label: `删除 ${deletableIds().length} 个模板`,
         icon: 'trash',
         danger: true,
-        onClick: () => deleteTemplate(t.id, t.name),
-      },
+        onClick: () => deleteSelected(),
+      }] : [
+        { label: '复制模板', icon: 'copy', onClick: () => duplicateTemplate(t.id) },
+        {
+          label: `删除模板「${t.name}」`,
+          icon: 'trash',
+          danger: true,
+          onClick: () => deleteSelected(),
+        },
+      ]),
     ]);
   });
+
+  /** 勾着的那些里真正删得掉的（全局那一套删不掉，它在多选里只是这一项留着）。 */
+  function deletableIds() {
+    return selection.ids.filter((id) => id !== GLOBAL_ID);
+  }
+
+  /**
+   * 删掉勾着的那些（只勾了一行就是删那一行）。
+   *
+   * 一次确认、一次往返：勾五下删五次会在列表上闪五轮，而用户要的是"这五个都没了"。
+   * 勾选中混进「基本配置」那一套时只删其余的 —— 它是所有模板的默认值来源，删掉的话
+   * 剩下的模板全都没有兜底值了。
+   */
+  async function deleteSelected() {
+    const ids = deletableIds();
+    if (!ids.length) {
+      toast('「基本配置」不能删除', 'warning');
+      return;
+    }
+    const one = ids.length === 1;
+    const names = ids.map((id) => ctx.state.templates.find((t) => t.id === id)?.name).filter(Boolean);
+    const title = one ? `删除模板「${names[0]}」？` : `删除 ${ids.length} 个模板？`;
+    const text = one
+      ? '此操作不可撤销。'
+      : `此操作不可撤销：${names.slice(0, 6).join('、')}${names.length > 6 ? ' 等' : ''}`;
+    if (!(await confirmDialog(title, text, '删除', true))) return;
+    try {
+      const gone = await ctx.api.deleteTemplates(ids);
+      const rest = ctx.state.templates.filter((t) => !ids.includes(t.id));
+      ctx.state.templates = rest;
+      selection.prune(rest.map((t) => t.id));
+      // 落在删掉的那一格上：用户刚删的是哪几个，它旁边的就是最该接着看的那一个。
+      const at = ctx.state.templates.findIndex((t) => t.id === ctx.state.currentTemplateId);
+      if (at < 0) {
+        ctx.state.currentTemplateId = ctx.state.templates.find((t) => !t.global)?.id || '';
+        draft = null; dirty = false;
+        selectTemplate(ctx.state.currentTemplateId);
+      } else {
+        renderList();
+      }
+      ctx.notifyTemplatesChanged();
+      toast(one ? `已删除「${names[0]}」` : `已删除 ${gone} 个模板`, 'success');
+    } catch (err) {
+      toast(err?.message || '删除失败', 'error');
+    }
+  }
 
   async function duplicateTemplate(id) {
     const t = await ctx.api.duplicateTemplate(id);
@@ -747,30 +994,25 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     toast(`已复制为「${t.name}」`, 'success');
   }
 
-  async function deleteTemplate(id, name) {
-    if (!(await confirmDialog('删除模板', `确定删除「${name}」吗？此操作不可撤销。`, '删除', true))) return;
-    await ctx.api.deleteTemplate(id);
-    ctx.state.templates = ctx.state.templates.filter((t) => t.id !== id);
-    if (ctx.state.currentTemplateId === id) {
-      draft = null; dirty = false;
-      selectTemplate(ctx.state.templates.find((t) => !t.global)?.id);
-    } else {
-      renderList();
-    }
-    toast('模板已删除', 'success');
-  }
-
   el.addEventListener('click', async (e) => {
+    // 「基本配置」那一行和普通行长得不一样，它自己带 data-global；两行都要参与多选，
+    // 所以先问"点在不在勾选里"，再决定是换行还是只改勾选。
+    const row = e.target.closest('.tpl-row');
+    if (row) {
+      const id = row.dataset.id;
+      if (id === ctx.state.currentTemplateId) {
+        selection.click(visibleIds(), id, e);
+        return;
+      }
+      if (dirty && !(await confirmDialog('放弃修改？', '当前模板有未保存的修改，切换后将丢失。', '放弃修改', true))) return;
+      selection.click(visibleIds(), id, e);
+      selectTemplate(id);
+      return;
+    }
     const gcard = e.target.closest('[data-global]');
     if (gcard) {
       if (dirty && !(await confirmDialog('放弃修改？', '当前模板有未保存的修改，切换后将丢失。', '放弃修改', true))) return;
       selectTemplate(gcard.dataset.global);
-      return;
-    }
-    const item = e.target.closest('.tpl-row');
-    if (item) {
-      if (dirty && !(await confirmDialog('放弃修改？', '当前模板有未保存的修改，切换后将丢失。', '放弃修改', true))) return;
-      selectTemplate(item.dataset.id);
       return;
     }
     const btn = e.target.closest('[data-act]');
@@ -796,33 +1038,16 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
       if (!ctx.state.templates.some((x) => x.id === t.id)) ctx.state.templates.push(t);
       ctx.state.currentTemplateId = t.id;
       selectTemplate(t.id);
-      toast('已创建模板', 'success');
+      toast('已新建模板', 'success');
     } else if (act === 'duplicate') {
       if (!draft) return;
       if (isGlobal()) { toast('全局模板是默认值来源，请直接新建模板', 'warning'); return; }
       await duplicateTemplate(draft.id);
-    } else if (act === 'import') {
-      try {
-        const n = await ctx.api.importTemplatesFromFile();
-        if (n > 0) { ctx.state.templates = await ctx.api.templates(); renderList(); toast(`已导入 ${n} 个模板`, 'success'); }
-      } catch (err) { toast(err.message || String(err), 'error'); }
-    } else if (act === 'export') {
-      try {
-        const p = await ctx.api.exportTemplates();
-        if (p) toast(`已导出到 ${p}`, 'success', 4200);
-      } catch (err) { toast(err.message || String(err), 'error'); }
-    } else if (act === 'reset-builtin') {
-      if (!(await confirmDialog('恢复内置模板', '将删除全部模板并重新写入内置模板集，自定义模板会丢失。', '恢复', true))) return;
-      try {
-        await ctx.api.invalidateTemplates?.();
-      } catch { /* optional */ }
-      const dataDir = await ctx.api.dataDir();
-      await shellAction(ctx.api.openPath(dataDir));
-      toast('请删除 data/templates.json 后重启，即可恢复内置模板', 'info', 6000);
     } else if (act === 'delete') {
       if (!draft) return;
-      if (isGlobal()) { toast('全局模板不能删除', 'warning'); return; }
-      await deleteTemplate(draft.id, draft.name);
+      if (isGlobal()) { toast('「基本配置」不能删除', 'warning'); return; }
+      selection.only(draft.id);
+      await deleteSelected();
     } else if (act === 'save' || act === 'save-as') {
       if (!draft) return;
       if (act === 'save-as' && isGlobal()) { toast('全局模板不能另存为，请直接新建模板', 'warning'); return; }
@@ -835,7 +1060,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         if (payload[k] == null) delete payload[k];
       }
       if (!isGlobal() && !payload.outputOverride) {
-        for (const k of ['outMode', 'outDir', 'outSuffix', 'outPattern']) delete payload[k];
+        for (const k of ['outDirSpec', 'outPattern']) delete payload[k];
       }
       if (act === 'save-as') {
         payload.id = '';
@@ -855,16 +1080,31 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         dirty = false;
         ctx.state.currentTemplateId = saved.id;
         renderList(); renderForm(); ctx.notifyTemplatesChanged();
-        toast(payload.global ? '基本配置已保存，所有模板的默认值已更新' : '模板已保存', 'success');
+        toast(payload.global
+          ? '「基本配置」已保存，所有模板的默认值已更新'
+          // 另存为报的是"多了一套"，保存报的是"这一套存好了"。两件事的落点不同，说成
+          // 同一句的话，用户会以为「另存为新模板」只是把当前这套覆盖了。
+          : act === 'save-as' ? `已另存为「${saved.name}」` : `模板已保存「${saved.name}」`, 'success');
       } catch (err) { toast(err.message || String(err), 'error'); }
     } else if (act === 'preview') {
       await previewCommand();
     }
   });
 
+  // 搜完要把看不见的勾去掉：不剪的话，Shift 的范围和「删除 N 项」会拿着一串
+  // 用户根本没看见、也没法再取消勾的行去操作。
   el.querySelector('[data-role=search]').addEventListener('input', (e) => {
     keyword = e.target.value.trim().toLowerCase();
+    selection.prune(visibleIds());
     renderList();
+  });
+
+  el.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return;
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    e.preventDefault();
+    selection.selectAll(visibleIds());
   });
 
   /* --------------------------------------------------------- reordering */
@@ -920,6 +1160,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     const byId = new Map(ctx.state.templates.map((t) => [t.id, t]));
     const previous = ctx.state.templates;
     ctx.state.templates = order.map((id) => byId.get(id)).filter(Boolean);
+    selection.prune(ctx.state.templates.map((t) => t.id));
     renderList();
     // No success toast: the reordered list *is* the confirmation, and a toast that
     // fires on every drop trains the user to dismiss it. A rejected save still has to

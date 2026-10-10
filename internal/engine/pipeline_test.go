@@ -144,8 +144,8 @@ func TestResolveOutputAvoidsOverwritingSource(t *testing.T) {
 	info := &media.Info{Path: src, Ext: "mp4", DisplayWidth: 1920, DisplayHeight: 1080,
 		Video: &media.Stream{Codec: "h264"}}
 	global := store.DefaultGlobalTemplate()
-	global.OutMode = store.OutputSame
-	global.OutPattern = "{name}" // deliberately identical to the source name
+	global.OutDirSpec = store.DirSpec{} // 留空 = 源文件所在目录
+	global.OutPattern = "{name}"        // deliberately identical to the source name
 
 	out, err := ResolveOutput(OutputRequest{
 		Info: info,
@@ -212,7 +212,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	// Output rules, concurrency and log level all live on the global template now.
 	global := store.DefaultGlobalTemplate()
-	global.OutMode = store.OutputSame
+	global.OutDirSpec = store.DirSpec{} // 留空 = 源文件所在目录
 	global.OutPattern = "{name}_out"
 	global.Perf.Concurrency = 2
 	global.Perf.LogLevel = "warning"
@@ -318,7 +318,7 @@ func TestFilterRulesMoveExcludedFile(t *testing.T) {
 	global.Filter = &store.FilterSpec{
 		MinSizeMB:     500, // the fixture is nowhere near 500 MB
 		Action:        store.ActionMove,
-		Dest:          store.DestRule{Mode: store.OutputCustom, Dir: target},
+		Dir:           store.DirSpec{Mode: store.OutputCustom, Dir: target},
 		RenamePattern: "excluded_{name}.{ext}",
 	}
 
@@ -359,6 +359,11 @@ func TestFilterRulesMoveExcludedFile(t *testing.T) {
 	moved, err := filepath.Glob(filepath.Join(target, "excluded_small_clip.mp4"))
 	if err != nil || len(moved) == 0 {
 		t.Fatalf("expected the excluded file in the target directory, got %v (%v)", moved, err)
+	}
+	// 筛选规则搬走的源文件，落点也要记在行上：这一行的「定位源文件」就是靠它才
+	// 找得到文件。搬它的是哪条规则，对列表来说没有区别。
+	if want := filepath.Join(target, "excluded_small_clip.mp4"); jobs[0].SourceMovedTo != want {
+		t.Errorf("SourceMovedTo = %q, want %q", jobs[0].SourceMovedTo, want)
 	}
 }
 

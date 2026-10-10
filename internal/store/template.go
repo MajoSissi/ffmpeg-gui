@@ -1,7 +1,5 @@
 package store
 
-import "time"
-
 // ---------------------------------------------------------------------------
 // Resize
 // ---------------------------------------------------------------------------
@@ -101,8 +99,7 @@ type Template struct {
 	// Global marks the one template that holds the defaults every other template
 	// inherits. It is pinned at the top of the list and cannot be deleted or
 	// duplicated.
-	Global    bool  `json:"global,omitempty"`
-	UpdatedAt int64 `json:"updatedAt"`
+	Global bool `json:"global,omitempty"`
 
 	// 容器
 	Container string `json:"container"`
@@ -131,13 +128,12 @@ type Template struct {
 	AudioChannels int    `json:"audioChannels"`
 	SampleRate    int    `json:"sampleRate"`
 
-	// 输出与命名。留空的字段跟随「全局模板」里的同一项；但只要
-	// OutputOverride 为 false，整段都跟随全局，模板自己写的值会被忽略
-	//（对应界面上的「与全局不同」开关）。
-	OutMode    string `json:"outMode"`    // "" | same | sibling | custom | mirror
-	OutDir     string `json:"outDir"`     // custom / mirror 使用的目录
-	OutSuffix  string `json:"outSuffix"`  // sibling 使用的后缀，如 _out
-	OutPattern string `json:"outPattern"` // 命名模板，如 {name}
+	// 输出与命名。是否跟随「全局模板」只由 OutputOverride 这一个开关决定
+	//（对应界面上的「与全局不同」）：为 false 时整段跟随，模板自己写的值被忽略；
+	// 为 true 时字段留空各自取最朴素的默认——方式留空 = 与源文件同目录，名称留空
+	// = 源文件名。段内不再有第二层「留空即跟随」。
+	OutDirSpec DirSpec `json:"outDirSpec"` // 产物放哪：原目录 / 自定义目录 / 同级目录 / 同级顶层目录
+	OutPattern string  `json:"outPattern"` // 输出文件名称，如 {name}
 	// OutputOverride 记录这一段是不是被模板显式接管。关掉时整段跟随全局模板。
 	// 之所以用布尔量而不是指针，是因为输出段里没有「0 有意义」的字段——
 	// 每个字段为空就表示未设置，逐字段回落已经足够。
@@ -172,16 +168,6 @@ type Template struct {
 // IsRemux reports whether the template only rewraps the streams.
 func (t Template) IsRemux() bool {
 	return t.VideoMode == ModeCopy && (t.AudioMode == ModeCopy || t.AudioMode == ModeDisable) && !t.Resize.Enabled()
-}
-
-// OverridesOutput reports whether this template carries its own output rules
-// instead of inheriting them from the global template. The switch state is the
-// authority: a follower that still has stale values written into it is ignored.
-func (t Template) OverridesOutput() bool {
-	if !t.OutputOverride {
-		return false
-	}
-	return t.OutMode != "" || t.OutDir != "" || t.OutSuffix != "" || t.OutPattern != ""
 }
 
 // Normalize fills safe defaults for enum-ish fields.
@@ -223,10 +209,12 @@ func (t *Template) Normalize() {
 	default:
 		t.FilterMode = "vf"
 	}
-	switch t.OutMode {
-	case "", OutputSame, OutputSibling, OutputCustom, OutputMirror:
+	// 一个模式管四个字段的哪些有意义，认不出的模式宁可退回"原目录"：那是唯一不
+	// 会写到别处去的答案。
+	switch t.OutDirSpec.Mode {
+	case "", OutputSame, OutputSibling, OutputSiblingTop, OutputCustom:
 	default:
-		t.OutMode = ""
+		t.OutDirSpec.Mode = ""
 	}
 	// The four inheritable sections are only normalised when present; a nil
 	// section is the "follow the global template" state and must stay nil.
@@ -271,7 +259,6 @@ func (t *Template) Normalize() {
 	if t.CRF > 51 {
 		t.CRF = 51
 	}
-	t.UpdatedAt = time.Now().Unix()
 }
 
 // TemplatesPath is the template file location.
@@ -285,6 +272,10 @@ func LoadTemplates() []Template {
 	ok, err := ReadJSON(TemplatesPath(), &list)
 	if !ok || err != nil || len(list) == 0 {
 		list = BuiltinTemplates()
+	} else {
+		// 老文件里的 outMode/dest 或 path 只在这里读一次，翻译成"模式 + 字段"
+		//（见 legacy_dir.go）。读文件而不是读结构体：那些键已经不在 Template 上了。
+		adoptLegacyDirs(list)
 	}
 	for i := range list {
 		list[i].Normalize()
