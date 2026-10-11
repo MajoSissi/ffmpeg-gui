@@ -233,7 +233,8 @@ const MOCK_HISTORY = (() => {
   return out;
 })();
 
-const MOCK_SETTINGS = {
+// `let` 而不是 `const`：`SaveSettings` 是整体替换（见那一处注释），不是就地合并。
+let MOCK_SETTINGS = {
   ffmpegPath: 'C:/Users/Majo/AppData/Local/Microsoft/WinGet/Links/ffmpeg.exe',
   ffprobePath: 'C:/Users/Majo/AppData/Local/Microsoft/WinGet/Links/ffprobe.exe',
   globalInArgs: '', globalOutArgs: '', hardwareDecode: false,
@@ -295,6 +296,9 @@ const MOCK_SETTINGS = {
   // 生效的那套是**没说明**的：任务页每次 `syncProfileOptions` 都要念一次摘要，而这是唯一
   // 一条会走到 `groupText` 的路。
   activeFilter: '排掉中间目录',
+  // 任务页那颗「禁用」的开关状态，和 `activeFilter` 一样落盘（见 `store.Settings.FilterOff`）。
+  // 开局是 `false`：默认要用过滤，跟 Go 侧零值一致。
+  filterOff: false,
 };
 
 // Shared by the lists below so one wording fix lands everywhere at once. They
@@ -672,12 +676,12 @@ function pickProfile(name, list) {
 }
 
 /**
- * 任务页上那个「不使用过滤」。**只活在内存里**（见 `App.SetActiveFilter`）。
+ * 任务页上那颗「禁用」的状态在 `MOCK_SETTINGS.filterOff` 里，**落盘**，和 `App` 一样。
  *
- * 它和 `MOCK_SETTINGS.activeFilter` 不是一回事：后者是"我在用哪套"，落盘；这个是
- * "这一次我不要过滤"，关掉程序就没了。
+ * 它和 `MOCK_SETTINGS.activeFilter` 是两件事：后者是"我在用哪套"，这个是"我用不用过滤"。
+ * 合起来（比如拿空名字当禁用）就答不出"禁用了之后用户原来选的是哪套"，而那颗下拉里
+ * "禁用"和"某一套"是两个并列选项 —— 切回来时该回到他上次挑的那一套。
  */
-let mockFilterOff = false;
 /**
  * `app.putProfile` 的等价物：把一套方案放进方案表里，位置只有一个答案。
  *
@@ -708,11 +712,13 @@ function putProfile(list, oldName, p) {
 /**
  * 此刻真正生效的那一套。
  *
- * 「不使用过滤」给**零值**方案（两组都没开 → `Take` 一律放行），和 Go 侧
+ * 「禁用」给**零值**方案（两组都没开 → `Take` 一律放行），和 Go 侧
  * `App.effectiveFilter` 同一句：判据只有"两组开没开"，禁用不另开一条代码路径。
  */
 function activeProfile() {
-  if (mockFilterOff) return { name: '', description: '', dirs: normalizeDirRules(), files: normalizeNameRules() };
+  if (MOCK_SETTINGS.filterOff) {
+    return { name: '', description: '', dirs: normalizeDirRules(), files: normalizeNameRules() };
+  }
   return pickProfile(MOCK_SETTINGS.activeFilter, normalizeProfiles(MOCK_SETTINGS.filterProfiles));
 }
 
@@ -726,8 +732,8 @@ function mockFilterState() {
   return {
     profiles,
     active: MOCK_SETTINGS.activeFilter,
-    off: mockFilterOff,
-    profile: mockFilterOff
+    off: !!MOCK_SETTINGS.filterOff,
+    profile: MOCK_SETTINGS.filterOff
       ? { name: '', description: '', dirs: normalizeDirRules(), files: normalizeNameRules() }
       : pickProfile(MOCK_SETTINGS.activeFilter, profiles),
   };
@@ -802,7 +808,17 @@ const mock = {
     };
   },
   Settings: () => MOCK_SETTINGS,
-  SaveSettings: (s) => Object.assign(MOCK_SETTINGS, s),
+  // **整体替换**，不是 `Object.assign` 合并 —— 这是 `App.SaveSettings` 的实际做法
+  // （`a.settings = s`）。
+  //
+  // 合并看起来"更宽容"，实际是把决定权悄悄换掉了：Go 那边交上去的那一份如果有字段漏了，
+  // 真实程序里那个字段就没了，而 mock 把它原样留着 —— 于是浏览器预览里一切正常，
+  // 用户那边配置被抹掉一块。合并还会让"前端只交半个对象"这整类 bug 在预览里消失。
+  // 四个调用点交的都是 `{...ctx.state.settings, 改的那一项}`，所以整体替换不会误伤。
+  //
+  // 过一遍 JSON 是因为 Wails 桥是序列化传的：不深拷贝的话，mock 里设置对象会和
+  // `ctx.state.settings` 变成同一个引用，前端随手改一个字段就改了"设置文件"。
+  SaveSettings: (s) => { MOCK_SETTINGS = JSON.parse(JSON.stringify(s)); return MOCK_SETTINGS; },
   ResetSettings: () => MOCK_SETTINGS,
   Templates: () => MOCK_TEMPLATES,
   GlobalTemplate: () => MOCK_TEMPLATES.find((t) => t.global) || MOCK_GLOBAL,
@@ -929,12 +945,15 @@ const mock = {
     }
     return mockFilterState();
   },
-  // 选哪套就写 MOCK_SETTINGS.activeFilter（下次打开从它开始）。`off` 那颗「不使用过滤」
-  // 只翻内存里的开关，一个字都不写进设置 —— 和 App.SetActiveFilter 同一句。
+  // 选哪套就写 MOCK_SETTINGS.activeFilter（下次打开从它开始）。`off` 那颗「禁用」也落盘
+  // （`MOCK_SETTINGS.filterOff`）—— 和 App.SetActiveFilter 同一句。
+  //
+  // `off` 时**不动** activeFilter：那颗下拉里"禁用"和"某一套"是并列选项，用户切回某一套
+  // 时要回到他原来挑的那套，所以"上次用的是哪套"一直留着。
   SetActiveFilter: (name, off) => {
     const profiles = normalizeProfiles(MOCK_SETTINGS.filterProfiles);
     MOCK_SETTINGS.filterProfiles = profiles;
-    mockFilterOff = !!off;
+    MOCK_SETTINGS.filterOff = !!off;
     if (!off) MOCK_SETTINGS.activeFilter = pickProfile(name, profiles).name;
     return mockFilterState();
   },

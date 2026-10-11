@@ -39,11 +39,6 @@ type App struct {
 	history   []store.Record
 	histDirty bool
 
-	// filterOff 是任务页上那个「不使用过滤」。**只在内存里**：它说的不是"我这套规则
-	// 怎么用"，而是"这一次我不要过滤"，所以关掉程序再打开就回到上次选的那套。
-	// 它和 settings 共用一把锁读写。
-	filterOff bool
-
 	runner   *engine.Runner
 	tray     *tray.Controller
 	trayIcon []byte
@@ -797,10 +792,11 @@ type FilterState struct {
 	// Active 是**此刻生效**那套的名字。它写进设置文件：任务页上选的就是在用的，
 	// 没有"默认那套 / 本次这套"两份 —— 界面上分不出来的东西，模型里也不该有两份。
 	Active string `json:"active"`
-	// Off 是任务页上那个「不使用过滤」。只在内存里（见 App.filterOff）。
+	// Off 是任务页上那颗「禁用」：它**落盘**（见 `store.Settings.FilterOff`），
+	// 所以关掉程序再打开还是禁用的状态。
 	Off bool `json:"off"`
 	// Profile 是当前生效的规则本身；Off 时给**零值**那一套（两组都没开 = 不过滤），
-	// 而不是"名字指向的那一套"—— 界面上正显示着「不使用过滤」，规则却还在生效，
+	// 而不是"名字指向的那一套"—— 界面上正显示着「禁用」，规则却还在生效，
 	// 是最难解释的一种不一致。
 	Profile store.FilterProfile `json:"profile"`
 }
@@ -820,26 +816,26 @@ func (a *App) filterStateLocked() FilterState {
 		profiles = []store.FilterProfile{{Name: store.DefaultFilterName}}
 	}
 	profile := store.PickProfile(a.settings.ActiveFilter, profiles)
-	if a.filterOff {
+	if a.settings.FilterOff {
 		profile = store.FilterProfile{}
 	}
 	return FilterState{
 		Profiles: profiles,
 		Active:   a.settings.ActiveFilter,
-		Off:      a.filterOff,
+		Off:      a.settings.FilterOff,
 		Profile:  profile,
 	}
 }
 
 // effectiveFilter is the profile in force right now, for the queue to read.
 //
-// 「不使用过滤」在这里给**零值**方案：两组规则都没开，`NameRules.Take` 因此一律放行 ——
+// 「禁用」在这里给**零值**方案：两组规则都没开，`NameRules.Take` 因此一律放行 ——
 // 判据只有这一个函数，禁用不需要另开一条代码路径（另开一条，就会有"关掉开关"和
 // "选中禁用"两种说法，而它们必须永远等价）。
 func (a *App) effectiveFilter() store.FilterProfile {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.filterOff {
+	if a.settings.FilterOff {
 		return store.FilterProfile{}
 	}
 	return store.PickProfile(a.settings.ActiveFilter, a.settings.FilterProfiles)
@@ -931,15 +927,18 @@ func (a *App) DeleteFilterProfiles(names []string) (FilterState, error) {
 // 它写设置文件：任务页上那个下拉是"我在用哪套"，没有第二份"默认那套"和它分庭抗礼 ——
 // 界面上分不出来的东西，模型里就不该有两份。所以关掉程序再打开，回到的是上次选的那套。
 //
-// `off` 是那颗「不使用过滤」：它**不写**设置文件（`filterOff` 只在内存里）。理由是它
-// 说的不是"这套规则怎么用"，而是"这一次我不要过滤"；落盘的话，忘了关回来就得每次
-// 手动切回去，而"忘了"正是这类开关最常见的用法。
+// `off` 是那颗「禁用」，它**也写设置文件**（`store.Settings.FilterOff`）。原先不写的
+// 理由是"这只是这一次不要过滤"，但用户拿它当"把这个功能关掉"用 —— 关了程序再打开又
+// 被自动接上，等于每开一次都要手动关一次。落盘之后它就是个普通开关。
+//
+// 注意 `off` 时**不动** `ActiveFilter`：那颗下拉里"禁用"和"某一套"是两个并列选项，
+// 用户下次挑回某一套时得回到他原来挑的那套，所以"上次用的是哪套"要一直留着。
 //
 // 名字对不上任何一套时按"没选"处理：记着一个不存在的名字，会让下拉显示的和引擎跑的
 // 看起来在说两件互相矛盾的事。
 func (a *App) SetActiveFilter(name string, off bool) (FilterState, error) {
 	a.mu.Lock()
-	a.filterOff = off
+	a.settings.FilterOff = off
 	if !off {
 		a.settings.ActiveFilter = store.PickProfile(name, a.settings.FilterProfiles).Name
 	}
@@ -947,10 +946,8 @@ func (a *App) SetActiveFilter(name string, off bool) (FilterState, error) {
 	s := a.settings
 	a.mu.Unlock()
 
-	if !off {
-		if err := store.SaveSettings(s); err != nil {
-			return st, err
-		}
+	if err := store.SaveSettings(s); err != nil {
+		return st, err
 	}
 	return st, nil
 }

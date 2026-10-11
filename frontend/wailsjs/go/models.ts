@@ -1255,6 +1255,7 @@ export namespace store {
 	    logKeepDays: number;
 	    filterProfiles: FilterProfile[];
 	    activeFilter: string;
+	    filterOff: boolean;
 	    lastTemplateId: string;
 	    showLogPanel: boolean;
 	    logDir: string;
@@ -1283,6 +1284,7 @@ export namespace store {
 	        this.logKeepDays = source["logKeepDays"];
 	        this.filterProfiles = this.convertValues(source["filterProfiles"], FilterProfile);
 	        this.activeFilter = source["activeFilter"];
+	        this.filterOff = source["filterOff"];
 	        this.lastTemplateId = source["lastTemplateId"];
 	        this.showLogPanel = source["showLogPanel"];
 	        this.logDir = source["logDir"];

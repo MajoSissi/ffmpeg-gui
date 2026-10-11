@@ -134,20 +134,23 @@ export function followHint(key, global) {
   }
   if (key === 'filter') {
     const f = s.filter || {};
-    if (!filterActive(f)) return '跟随全局：全部文件都处理，没有排除条件';
-    // Same wording rule as the toolbar chip: these bounds name what is EXCLUDED.
-    // "小于 300 MB" here reads as a description of the kept files, which is the
-    // opposite of what MinSizeMB does.
+    if (!filterActive(f)) return '跟随全局：全部文件都处理，没有跳过条件';
+    // Same wording rule as the toolbar chip, down to the verb: these bounds name what
+    // is SKIPPED. "小于 300 MB" here reads as a description of the kept files, which is
+    // the opposite of what MinSizeMB does.
+    //
+    // 动词必须和 `tasks.js` 那颗 chip 一字不差 —— 两处念的是同一句话（这个模板的匹配
+    // 条件），一处"跳过 <300MB"一处"排除 <300MB"，用户会以为是两个设置。
     const bits = [];
-    if (f.minSizeMB > 0) bits.push(`排除 <${f.minSizeMB} MB`);
-    if (f.maxSizeMB > 0) bits.push(`排除 >${f.maxSizeMB} MB`);
-    if (f.minLongEdge > 0) bits.push(`排除长边 <${f.minLongEdge}`);
-    if (f.maxLongEdge > 0) bits.push(`排除长边 >${f.maxLongEdge}`);
-    if (f.minDuration > 0) bits.push(`排除时长 <${f.minDuration}s`);
-    if (f.maxDuration > 0) bits.push(`排除时长 >${f.maxDuration}s`);
+    if (f.minSizeMB > 0) bits.push(`跳过 <${f.minSizeMB} MB`);
+    if (f.maxSizeMB > 0) bits.push(`跳过 >${f.maxSizeMB} MB`);
+    if (f.minLongEdge > 0) bits.push(`跳过长边 <${f.minLongEdge}`);
+    if (f.maxLongEdge > 0) bits.push(`跳过长边 >${f.maxLongEdge}`);
+    if (f.minDuration > 0) bits.push(`跳过时长 <${f.minDuration}s`);
+    if (f.maxDuration > 0) bits.push(`跳过时长 >${f.maxDuration}s`);
     if ((f.includeExts || []).length) bits.push(`仅 ${f.includeExts.join('/')}`);
-    if ((f.excludeExts || []).length) bits.push(`排除扩展名 ${f.excludeExts.join('/')}`);
-    return `跟随全局：${bits.join('、') || '没有排除条件'}；被排除的文件${relocatePhrase(f.action, f.dir)}`;
+    if ((f.excludeExts || []).length) bits.push(`跳过扩展名 ${f.excludeExts.join('/')}`);
+    return `跟随全局：${bits.join('、') || '没有跳过条件'}；被跳过的文件${relocatePhrase(f.action, f.dir)}`;
   }
   const p = s.problems || {};
   const ep = p.errorPattern ? `并改名为 ${p.errorPattern}` : '';
@@ -230,13 +233,13 @@ export function perfBody(p, opts, cpus = 0) {
  *
  * Which way the numbers point is stated once, above the grid, instead of six
  * times in the field hints. Written per field it kept coming out as 「小于 100 MB」
- * under a bound that means 「排除 <100 MB」 -- the same words, the opposite
+ * under a bound that means 「跳过 <100 MB」 -- the same words, the opposite
  * meaning, and the reader has no way to tell which one was meant.
  */
 export function filterBody(f, opts) {
   const d = f || {};
   return `
-  <p class="hint" style="margin:0 0 10px">下面填的都是<b>排除</b>条件：不满足的文件不处理。留 0 表示不限制。</p>
+  <p class="hint" style="margin:0 0 10px">下面填的都是<b>跳过</b>条件：不满足的文件不处理。留 0 表示不限制。</p>
   <div class="grid grid--3">
     ${field('最小体积 (MB)', `<input class="input" type="number" min="0" step="1" name="fMinSizeMB" value="${d.minSizeMB ?? 0}">`)}
     ${field('最短时长 (秒)', `<input class="input" type="number" min="0" name="fMinDuration" value="${d.minDuration ?? 0}">`)}
@@ -249,10 +252,10 @@ export function filterBody(f, opts) {
   </div>
   <div class="grid grid--2" style="margin-top:10px">
     ${field('仅处理这些扩展名', `<input class="input mono" name="fIncludeExts" value="${esc((d.includeExts || []).join(','))}" placeholder="mp4,mkv,mov">`)}
-    ${field('排除这些扩展名', `<input class="input mono" name="fExcludeExts" value="${esc((d.excludeExts || []).join(','))}" placeholder="webm,gif">`)}
+    ${field('跳过这些扩展名', `<input class="input mono" name="fExcludeExts" value="${esc((d.excludeExts || []).join(','))}" placeholder="webm,gif">`)}
   </div>
   <div class="section__head" style="border:0;padding:0;margin:18px 0 10px">
-    ${icon('route', 'sm')}<h3 style="font-size:13px">被排除文件的处理</h3>
+    ${icon('route', 'sm')}<h3 style="font-size:13px">被跳过文件的处理</h3>
   </div>
   <div class="grid grid--2">
     ${field('处理方式', selectHtml('fAction', opts.filterActions || [], actionOr(d.action, 'keep')))}
@@ -267,7 +270,7 @@ export function filterBody(f, opts) {
  * Running the same template over the same folder twice is the case it exists for,
  * and re-encoding finished files is the thing worth avoiding.
  *
- * Deliberately the same shape as 「被排除文件的处理」, down to the wording:
+ * Deliberately the same shape as 「被跳过文件的处理」, down to the wording:
  * 处理方式 + 输出目录 + 保留目录结构 + 源文件新名称 + 覆盖开关. The two differ only in
  * which file gets moved, and a rule that reads identically in both places is one
  * less thing to misremember.

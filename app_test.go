@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -673,11 +674,11 @@ func TestSetActiveFilterPersists(t *testing.T) {
 	}
 }
 
-// 「不使用过滤」只在本次运行里：两组规则都不参与，但设置文件里记的还是上次选的那套。
+// 「禁用」要**落盘**：关掉程序再打开，还是禁用着的。
 //
 // 判据是零值方案（两组都没开 → `NameRules.Take` 一律放行），不是另开一条"跳过过滤"
 // 的代码路径 —— 另开一条，就会有"关掉开关"和"选中禁用"两种说法，而它们必须永远等价。
-func TestFilterOffIsSessionOnly(t *testing.T) {
+func TestFilterOffPersists(t *testing.T) {
 	defer store.SetDataDir(store.DataDir())
 	store.SetDataDir(t.TempDir())
 
@@ -701,7 +702,7 @@ func TestFilterOffIsSessionOnly(t *testing.T) {
 	if !st.Off {
 		t.Fatalf("状态里没有报出禁用：%+v", st)
 	}
-	// 界面上正显示着「不使用过滤」，交出去的规则却还是那套 = 两边在说不一致的话。
+	// 界面上正显示着「禁用」，交出去的规则却还是那套 = 两边在说不一致的话。
 	if st.Profile.Dirs.Active() || st.Profile.Files.Active() {
 		t.Errorf("禁用时交出去的规则还在筛：%+v", st.Profile)
 	}
@@ -713,14 +714,53 @@ func TestFilterOffIsSessionOnly(t *testing.T) {
 	if !eff.Dirs.Recursive(true) {
 		t.Error("禁用时应当照旧含子目录")
 	}
-	// 设置文件一个字都没动 —— 下次打开还是那套。
-	if got := store.LoadSettings().ActiveFilter; got != "只要 h265" {
-		t.Errorf("设置文件里 = %q, want 只要 h265（禁用不落盘）", got)
+
+	// 落盘了没有 —— 这才是用户报的那件事（"重新打开程序会变成方案的"）。
+	//
+	// 断言直接读**文件正文**，不只信 `LoadSettings()`：后者会跑一遍 Normalize，而
+	// "文件里真写了这一项"和"读出来恰好还是这个值"是两件事。
+	//
+	// 按 JSON 键问，不做字符串匹配：`WriteJSON` 写的是带缩进的格式，`"filterOff": true`
+	// 中间有个空格 —— 拿 `"filterOff":true` 去 `Contains` 会得到一条"没落盘"的假红。
+	raw, err := os.ReadFile(store.SettingsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk map[string]any
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("settings.json 不是合法 JSON：%v", err)
+	}
+	if got, ok := onDisk["filterOff"]; !ok {
+		t.Errorf("settings.json 里根本没有 filterOff 这个键：%s", raw)
+	} else if got != true {
+		t.Errorf("settings.json 里 filterOff = %v, want true", got)
+	}
+	saved := store.LoadSettings()
+	if !saved.FilterOff {
+		t.Error("禁用没落盘，下次打开会被自动接上")
+	}
+	// 同时**不动** `ActiveFilter`：那颗下拉里"禁用"和"某一套"是并列选项，用户下次挑回
+	// 某一套时要回到他原来挑的那套。
+	if saved.ActiveFilter != "只要 h265" {
+		t.Errorf("设置文件里 = %q, want 只要 h265（禁用不该动「上次用的是哪套」）", saved.ActiveFilter)
 	}
 
-	// 关掉禁用，回到上次选的那套。
+	// 真的重开一次程序：从磁盘读设置、新建 App，报出来的还得是禁用。
+	reopened := &App{runner: engine.NewRunner(), settings: saved}
+	reopened.settings.Normalize()
+	if again := reopened.FilterState(); !again.Off {
+		t.Errorf("重开之后 Off = false，want true（设置文件里有 filterOff）")
+	}
+	if a2 := reopened.effectiveFilter(); a2.Dirs.Active() || a2.Files.Active() {
+		t.Errorf("重开之后队列读到的还在筛：%+v", a2)
+	}
+
+	// 关掉禁用，回到上次选的那套，并且这次的"关"也要落盘。
 	if st, _ = a.SetActiveFilter("只要 h265", false); st.Off || st.Profile.Name != "只要 h265" {
 		t.Fatalf("关掉禁用后没回到那套：%+v", st)
+	}
+	if store.LoadSettings().FilterOff {
+		t.Error("关掉禁用没落盘，下次打开还会是禁用的")
 	}
 }
 

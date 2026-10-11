@@ -251,7 +251,8 @@ export function createTasksView(ctx) {
 
   /**
    * 任务页上换方案就是**换掉此刻在用的那套**，并且记住它：这里选哪套，下次打开就从它
-   * 开始。「不使用过滤」也在这颗下拉里，值是空串。
+   * 开始。「禁用」也在这颗下拉里，值是空串 —— 它同样被记住（后端写 `filterOff`），
+   * 所以关掉程序再打开还是禁用的。
    *
    * 换的是"往下收的时候按哪套规则"，所以队列里已经在的任务一个都不动：过滤发生在加入
    * 的那一刻，不是跑到一半再筛。把已经在的任务也筛一遍，才是真的把人坑了。
@@ -698,9 +699,9 @@ export function createTasksView(ctx) {
    * `active` 自己推一遍：那等于把"名字找不到时退回第一套"再写一遍，而
    * 页面上说"当前是这套"、引擎按另一套跑，是最难查的一类不一致。
    *
-   * 第一项是「不使用过滤」，值为空串 —— 下拉里只有这个值代表"不选哪套"，所以
-   * 禁用过一轮之后还能转回来选某一套，它自己没有被顶掉。`off` 时选中这一项，
-   * 标题写成"什么都不按"而不是拿某一套的条件去骗人。
+   * 第一项是「禁用」，值为空串 —— 下拉里只有这个值代表"不选哪套"，所以禁用过一轮
+   * 之后还能转回来选某一套，它自己没有被顶掉。`off` 时选中这一项，标题写成"什么都不按"
+   * 而不是拿某一套的条件去骗人。
    *
    * 当前这套说了什么放在 title 里：工具栏那一行已经有六个控件，再塞一整句条件进去会
    * 把它挤成两行，而"这套里到底写了什么"是偶尔才要确认一次的事。
@@ -709,8 +710,8 @@ export function createTasksView(ctx) {
     const st = ctx.state.filter || {};
     const list = st.profiles || [];
     if (!list.length) {
-      // 没有方案可列，但「不使用过滤」仍是一个真实的选择 —— 队列照收不误。
-      profileSelect.innerHTML = '<option value="">不使用过滤</option>';
+      // 没有方案可列，但「禁用」仍是一个真实的选择 —— 队列照收不误。
+      profileSelect.innerHTML = '<option value="">禁用</option>';
       profileSelect.disabled = false;
       profileSelect.value = '';
       profileSelect.title = '添加文件夹、拖入文件夹时不做任何筛选';
@@ -719,7 +720,7 @@ export function createTasksView(ctx) {
     }
     profileSelect.disabled = false;
     const name = st.off ? '' : (st.profile?.name || list[0].name);
-    profileSelect.innerHTML = '<option value="">不使用过滤</option>' + list
+    profileSelect.innerHTML = '<option value="">禁用</option>' + list
       .map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
       .join('');
     profileSelect.value = name;
@@ -748,7 +749,7 @@ export function createTasksView(ctx) {
     // 归「过滤」页管，这里只选一套 —— 一批目录连着加好几次的时候，每次都要重新填一遍
     // 同样的条件才是真的烦。
     //
-    // 用词：工具栏第二行那颗 chip 说的是模板的**匹配条件**（按体积、时长、扩展名排除
+    // 用词：工具栏第二行那颗 chip 说的是模板的**匹配条件**（按体积、时长、扩展名跳过
     // 文件），所以这一颗叫「过滤」—— 两件事都会让文件不进队列，名字必须分得开。
     syncProfileOptions();
 
@@ -756,21 +757,28 @@ export function createTasksView(ctx) {
     // that follows it), so the chip describes whatever this queue is bound to right
     // now. Switching templates has to update it, hence renderToolbar on change.
     //
-    // Wording: these bounds say what gets EXCLUDED, not what gets processed. The old
+    // Wording: these bounds say what gets SKIPPED, not what gets processed. The old
     // phrasing ("小于 100MB") read as a description of the kept files, so a
     // minSizeMB of 100 looked like "process everything from 100MB up" -- the exact
-    // opposite of what it does. Naming the excluded side removes the ambiguity.
+    // opposite of what it does. Naming the skipped side removes the ambiguity.
+    //
+    // 动词用「跳过」而不是「排除」：这颗 chip 和工具栏第二行的「过滤」是两件事，而
+    // "排除"在过滤页那边已经是一个双向开关的一侧（收 / 排除目录名）。同一个词在两处
+    // 指不同的东西，用户得先猜这里说的是哪一个。
+    //
+    // 这一改和 `sections.js` 的 `followHint('filter')` 必须同步：两处念的是同一句
+    // 话（模板的匹配条件），一处说"跳过 <300MB"另一处说"排除 <300MB"就是自相矛盾。
     const f = (currentTemplate() && currentTemplate().filter) || {};
     const parts = [];
     const n = (v) => num(v, 0);
-    if (f.minSizeMB > 0) parts.push(`排除 <${n(f.minSizeMB)}MB`);
-    if (f.maxSizeMB > 0) parts.push(`排除 >${n(f.maxSizeMB)}MB`);
-    if (f.minLongEdge > 0) parts.push(`排除长边 <${n(f.minLongEdge)}`);
-    if (f.maxLongEdge > 0) parts.push(`排除长边 >${n(f.maxLongEdge)}`);
-    if (f.minDuration > 0) parts.push(`排除时长 <${n(f.minDuration)}s`);
-    if (f.maxDuration > 0) parts.push(`排除时长 >${n(f.maxDuration)}s`);
+    if (f.minSizeMB > 0) parts.push(`跳过 <${n(f.minSizeMB)}MB`);
+    if (f.maxSizeMB > 0) parts.push(`跳过 >${n(f.maxSizeMB)}MB`);
+    if (f.minLongEdge > 0) parts.push(`跳过长边 <${n(f.minLongEdge)}`);
+    if (f.maxLongEdge > 0) parts.push(`跳过长边 >${n(f.maxLongEdge)}`);
+    if (f.minDuration > 0) parts.push(`跳过时长 <${n(f.minDuration)}s`);
+    if (f.maxDuration > 0) parts.push(`跳过时长 >${n(f.maxDuration)}s`);
     if (f.includeExts?.length) parts.push(`仅 ${f.includeExts.join('/')}`);
-    if (f.excludeExts?.length) parts.push(`排除 ${f.excludeExts.join('/')}`);
+    if (f.excludeExts?.length) parts.push(`跳过 ${f.excludeExts.join('/')}`);
     const tag = el.querySelector('[data-role=filter-text]');
     if (parts.length) {
       const act = f.action === 'move' ? '移动到' : f.action === 'copy' ? '复制到' : '留在原处';

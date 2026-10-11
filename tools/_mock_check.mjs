@@ -310,15 +310,32 @@ eq('选中的那套写进设置文件（下次打开从它开始）', (await api
 const bogus = await api.setActiveFilter('查无此套', false);
 eq('对不上的名字按第一套处理', bogus.profile.name, BASE0);
 
-// 「不使用过滤」：两组都不参与，但设置文件里记的还是选中的那套。
+// 「禁用」：两组都不参与，而且它**落盘** —— 关掉程序再打开还是禁用的。
+//
+// 这条以前反着写（"禁用不落盘，设置文件里还是那套"）。那是当时的决定，用户用下来否掉了：
+// 他拿这颗当"把这个功能关掉"用，关了程序又被自动接上，等于每开一次都要手动关一次。
 await api.setActiveFilter(COND.name, false);
 const off = await api.setActiveFilter(COND.name, true);
 eq('状态里报出禁用', off.off, true);
 eq('禁用时交出去的规则不筛', [off.profile.dirs.enabled, off.profile.files.enabled], [false, false]);
 eq('禁用 = 整个文件夹照收', (await api.addFolderDialog(true)).added, 31);
-eq('禁用不落盘（设置文件里还是那套）', (await api.filterState()).active, COND.name);
+// 落盘了没有 —— 这才是用户报的那件事（"重新打开程序会变成方案的"）。
+// 从 `api.settings()` 读，而不是去够 mock 内部的 `MOCK_SETTINGS`：这条问的正是"设置文件里
+// 写了什么"，而 `Settings` 就是那件事的出口（设置页也靠它整体回写，所以走它还能顺带验证
+// 那颗开关不会被一次保存抹掉）。
+eq('禁用落盘了', (await api.settings()).filterOff, true);
+// 同时**不动**「上次用的是哪套」：那颗下拉里"禁用"和"某一套"是并列选项，用户切回某一套
+// 时要回到他原来挑的那套。
+eq('禁用不动「上次用的是哪套」', (await api.filterState()).active, COND.name);
 const offBack = await api.setActiveFilter(COND.name, false);
 eq('关掉禁用回到那套', [offBack.off, offBack.profile.name], [false, COND.name]);
+eq('关掉禁用也落盘了', (await api.settings()).filterOff, false);
+// 设置页保存是**整体**替换 `Settings`：它交回去的那一份必须带着 filterOff，否则用户在设置页
+// 点一次保存就把禁用状态悄悄打开了。这里模拟一次"原样交回"。
+await api.setActiveFilter(COND.name, true);
+await api.saveSettings(await api.settings());
+eq('设置页整体保存不会把禁用抹掉', (await api.settings()).filterOff, true);
+await api.setActiveFilter(COND.name, false);
 
 // 正在用的那套被改名时，设置里记的名字跟着走：否则它指着一个已经不存在的名字，下一次
 // 取生效方案时会静默退回第一套，而用户手里什么都没换。

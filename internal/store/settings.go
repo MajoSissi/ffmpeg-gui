@@ -54,7 +54,18 @@ type Settings struct {
 	FilterProfiles []FilterProfile `json:"filterProfiles"`
 	// ActiveFilter 是**此刻在用**的那套方案的名字。任务页上下拉选哪套就写这里，
 	// 下次打开从它开始 —— 见 `App.SetActiveFilter`。名字指向一套不存在的方案时退回第一套。
+	//
+	// 它和 FilterOff 是两件事，别合成一个：这里记的是"上次用的是哪一套"，FilterOff
+	// 记的是"那次用没用过滤"。合起来（比如拿空名字当禁用）就没法回答"禁用了之后，
+	// 用户原来选的是哪套"，而那颗下拉里"禁用"和"某一套"是两个并列的选项，切回来时
+	// 该回到他上次挑的那一套。
 	ActiveFilter string `json:"activeFilter"`
+	// FilterOff 是任务页上那颗「禁用」：过滤整个不参与，添加文件夹时照收不误。
+	//
+	// 它**落盘**。原先只在内存里，理由是"这只是这一次不要过滤"；实际用下来恰恰相反 ——
+	// 用户是拿它当"把这个功能关掉"用的，关掉程序再打开又被自动接上，等于每开一次程序
+	// 都要手动关一次。落盘之后它就是一个普通开关：关了就是关了，直到用户自己打开。
+	FilterOff bool `json:"filterOff"`
 
 	// --- 界面记忆 ---
 	LastTemplateID string `json:"lastTemplateId"`

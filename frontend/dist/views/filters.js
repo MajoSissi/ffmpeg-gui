@@ -26,7 +26,7 @@ import { icon } from '../icons.js';
  * 一套，就是"页面上说的"和"真跑一遍会做的"分家的第一步。
  *
  * 任务页上那个下拉换的就是此刻在用的那一套（选中就落盘，下次打开从它开始）；那一列
- * 最上面还有一颗「不使用过滤」，它只在本次运行里 —— 见 `App.SetActiveFilter`。
+ * 最上面还有一颗「禁用」，它和后端的 `filterOff` 一样落盘 —— 见 `App.SetActiveFilter`。
  */
 
 const MODES = [
