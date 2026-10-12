@@ -7,6 +7,133 @@ import {
 import { effective } from './sections.js';
 import { profileSummary } from './filters.js';
 
+/**
+ * 队列那一颗按钮此刻长什么样、按下去要干什么。
+ *
+ * **开始 / 暂停 / 继续 是一颗按钮的三种状态，不是三颗按钮。** 三颗同时在屏幕上时总有
+ * 一颗是废话：点过「开始」之后「开始」就没意义了（队列是活的，之后加进来的文件会自己
+ * 跑），而「暂停」在还没开始之前也一样。用户得先判断自己在哪个阶段，才能挑对那一颗 ——
+ * 这是个可以省掉的判断，省掉的办法就是让按钮自己跟着走。
+ *
+ * 回到「开始」的**唯一**出路是「停止」（后端把 `armed` 清掉）。一批跑完之后仍然停在
+ * 「暂停」上：队列还是活的，此时再加文件它会立刻开跑，所以那不是"回到未开始"。
+ *
+ * 标签和动作从**同一个函数**里出，点击那边不许另算一遍 —— 分开算就有一次算错的机会，
+ * 而算错的后果是按钮写着「暂停」、按下去却在开始队列。三条判据全在这里：
+ *
+ * | 后端状态 | 按钮 | 按下去 |
+ * | --- | --- | --- |
+ * | `armed=false` | 开始 | `Start()` |
+ * | `armed && !paused` | 暂停 | `Pause()` |
+ * | `armed && paused` | 继续 | `Resume()` |
+ *
+ * 三态都不灰：每一态按下去都真的改变一样东西（开始 = 队列转活、暂停 = 按住不再接活、
+ * 继续 = 放开）。空队列上按「开始」也一样 —— 它把队列转活，接着加进来的文件就自己跑。
+ */
+export function runButton(s) {
+  // `!== false` 而不是 `!!`：这是原有写法，保留。`started` 是后加的字段（第 25 批之前
+  // 没有它），这样写是"载荷里没这个键时按已经开始了处理"。正常的启动路径走不到这一支
+  // —— `boot()` 先等 `bootstrap()` 回来才 `paint()`，第一次上屏时 `stats` 已经是完整的一份。
+  const started = s.started !== false;
+  if (!started) {
+    // 没有「排队中」的任务就没得开：按下去只是把队列武装起来（`armed=true`），屏幕上
+    // 一行都不会动 —— 空队列上点它、和程序坏了，看起来是同一件事。这一档也能从别处
+    // 达到：点过「停止」之后，排队中的都被丢成「取消」，列表非空但依然没得开。
+    //
+    // 判据是 `pending` 而不是 `total`：**有**几行不重要，有没有一行等着跑才重要。
+    // total > 0 而 pending === 0（全是完成 / 取消 / 跳过）时按「开始」同样没有
+    // 反应，那时候旁边那颗「重试失败」是亮的 —— 想接着跑走那条路。
+    const can = (s.pending || 0) > 0;
+    return {
+      act: 'start', label: '开始', icon: 'play', filled: true,
+      disabled: !can,
+      title: can ? '开始处理队列' : '没有排队中的任务',
+    };
+  }
+  if (s.paused) {
+    return { act: 'toggle', label: '继续', icon: 'play', filled: true, disabled: false, title: '放开按住的队列，从停下的地方接着转' };
+  }
+  // 「暂停」不灰：队列是活的，把之后加进来的文件按住是一件真事，哪怕此刻一行都没有。
+  return { act: 'toggle', label: '暂停', icon: 'pause', filled: false, disabled: false, title: '按住队列，并把正在转码的进程一起挂起（进度保留）' };
+}
+
+/**
+ * 队列是不是停在「还没开始」那一档 —— 也就是「开始」那颗按钮派得上用场的一档。
+ *
+ * 这一档只有一个判据：后端的 `armed` 是空的。**「停止」和"从没开始过"落在同一个值
+ * 上**（`Runner.Disarm` 与 `CancelAll` 都只清 `armed`，见 runner.go），所以"未开始"
+ * 和"停止之后"不需要各判一次 —— 它们本来就是同一个状态。
+ *
+ * 反过来说，"一批跑完了"**不是**这一档：队列还活着，之后加进来的文件会自己跑，
+ * 那时候要回到这一档得按「停止」。
+ *
+ * 读法照抄 `runButton()` 的 `s.started !== false`：载荷里没有 `started` 这个键时按
+ * "已经开始了"处理。**灰着比亮着安全** —— 它管的是「清空」那颗不可撤销的按钮。
+ */
+export function queueIdle(s) {
+  return (s || {}).started === false;
+}
+
+/**
+ * 工具栏右上角那几颗计数：**总任务进度 / 完成 / 失败 / 取消 / 跳过**。
+ *
+ * **「进度」不是「完成占多少」。** 它按 `engine.Stats.Finished()` 的口径算 —— 六种
+ * 终态的和再除以总数，和托盘悬停文字、每一行的进度条同一个定义（`Progress = Finished()
+ * / Total`）。9 个里 5 个成功、2 个失败、1 个跳过时，进度是 8/9 = 89%，而「完成」是
+ * 另一颗 chip 上的 5。**这两个数不能塞进同一颗 chip**：写「完成 5 / 9 · 89%」就是
+ * 自己跟自己打架，用户只会以为程序算错了。
+ *
+ * 各组的归并口径和状态筛选那几项**逐字一致**（`done` 含 `warning`、`skipped` 含
+ * `filtered`）：同一类任务在下拉里算一类、在计数里也该算一类，否则筛出 5 条、chip 说 3
+ * 条，用户不知道信哪个。**唯一不合的是 `canceled`** —— 状态筛选里它本来就单占一项
+ * （「取消」），所以这里也单占一颗；详见 `failed` 那一行的注释。
+ *
+ * 分组之和必须仍然是 `finished`：`完成 + 失败 + 取消 + 跳过 = 进度分子`。多一颗
+ * 分组 chip 就多一个能对不上的地方，所以取消单列之后那颗「取消」不能省 —— 省掉它，
+ * 「进度 12 / 12 · 100%」旁边就只有 5 + 0 + 0 三颗 chip，差的 7 个去了哪儿没人说得出来。
+ *
+ * 零值那一档由调用方决定藏不藏（`hidden = n === 0`），这里只给数，不给可见性 ——
+ * "空队列长什么样"是排版的事，不是计数的事。
+ *
+ * 计数说的是**整个队列**，不是状态筛选筛出来的那一屏：队列在被筛掉的行上照样跑，chip
+ * 跟着筛子一起缩水就等于说那些文件没了。所以这里只读 `stats`、**不碰 `filteredIds`**。
+ * （原先这件事由 `filterSummary()` 保证，它专门把两个数都念出来："3 / 9 个任务"。现在
+ * 不用念了，因为这几颗从来不跟着筛子走；"这一屏有几行"在下拉和底部分页条上。）
+ */
+export function queueCounts(s) {
+  const n = (v) => v || 0;
+  const total = n(s.total);
+  const done = n(s.done) + n(s.warning);
+  // 取消**不算失败**。用户按一次「停止」，排队中和在跑的那几十行会一起变成
+  // 「取消」，把它们算进「失败」等于把用户自己按的那一下报成程序出错 —— 一屏红色的
+  // 「失败 24」说的其实是"你喊的停生效了"。它单占一颗 chip，颜色是**冷紫**（`chip--info`），
+  // 和「跳过」的暖灰分开 —— 两种都灰成一片的话，一眼分不清哪几行是自己动过手的。口径和
+  // 「记录」页那张状态表一致（那边「取消」也是 `chip--info`）。
+  const failed = n(s.failed);
+  const canceled = n(s.canceled);
+  const skipped = n(s.skipped) + n(s.filtered);
+  // 和 `Stats.Finished()` 同一个加法，放在这里而不是各算一遍：进度条上的"8 / 9"、
+  // 百分比、以及"还剩几个"必须是同一个和，否则三处各自四舍五入就会差一个。取消**在
+  // 这里算数**（它是一行的终态，队列不会再去动它了）—— 不算失败的只是那颗 chip 的字。
+  const finished = done + failed + canceled + skipped;
+  // 百分比**取后端算好的 `progress`**，不在前端除一遍。`Stats.Progress` 是
+  // `statsLocked()` 从同一组计数器推出来的（`Progress = Finished() / Total`），托盘
+  // 悬停文字念的就是它 —— 前端自己再除一遍就是第二个出处，而两处不一致的表现是
+  // "悬停说 89%、工具栏说 88%"，查起来要半宿。分子仍然是 `finished`：万一后端那份
+  // 分母不对，chip 上的「8 / 9」和百分比会自己打架，比我在这儿替它圆过去强。
+  const pct = total > 0 ? Math.round(n(s.progress) * 100) : 0;
+  return {
+    total, done, failed, canceled, skipped, finished,
+    // 空队列上不写「0 / 0 · 0%」：那是三个零在互相解释。这一档说"还没有任务"，
+    // 也和这颗 chip 从前的字样一致。
+    progressText: total > 0 ? `进度 ${finished} / ${total} · ${pct}%` : '还没有任务',
+    doneText: `完成 ${done}`,
+    failedText: `失败 ${failed}`,
+    canceledText: `取消 ${canceled}`,
+    skippedText: `跳过 ${skipped}`,
+  };
+}
+
 export function createTasksView(ctx) {
   const el = document.createElement('section');
   el.className = 'page';
@@ -15,18 +142,21 @@ export function createTasksView(ctx) {
    * The status filter's choices.
    *
    * Grouped by the question being asked rather than one entry per internal status:
-   * 已完成 and 完成(警告) are the same answer to "which of these actually got
-   * encoded", and 已跳过 / 已排除 both mean the file was deliberately left alone.
+   * 完成 and 完成(警告) are the same answer to "which of these actually got
+   * encoded", and 跳过 covers both ways a file is deliberately left alone: the
+   * template's 匹配条件 said no, or this run already processed it.
    * `match` takes a job, so this one list drives both the dropdown and the filter.
    */
   const STATUS_FILTERS = [
     { value: '', label: '全部状态', match: () => true },
     { value: 'pending', label: '排队中', match: (j) => j.status === 'pending' },
     { value: 'active', label: '处理中', match: (j) => j.status === 'running' || j.status === 'preparing' },
-    { value: 'done', label: '已完成', match: (j) => j.status === 'done' || j.status === 'warning' },
+    { value: 'done', label: '完成', match: (j) => j.status === 'done' || j.status === 'warning' },
     { value: 'failed', label: '失败', match: (j) => j.status === 'failed' },
-    { value: 'canceled', label: '已取消', match: (j) => j.status === 'canceled' },
-    { value: 'skipped', label: '已跳过 / 已排除', match: (j) => j.status === 'skipped' || j.status === 'filtered' },
+    { value: 'canceled', label: '取消', match: (j) => j.status === 'canceled' },
+    // 一项管两个状态：`skipped` 和 `filtered` 在界面上都叫「跳过」（见 `ui.js`），
+    // 拆成两项就是两行同义项。
+    { value: 'skipped', label: '跳过', match: (j) => j.status === 'skipped' || j.status === 'filtered' },
   ];
 
   el.innerHTML = `
@@ -41,24 +171,26 @@ export function createTasksView(ctx) {
         <button class="btn btn--text" data-act="clear-finished">${icon('trash')}清理已完成</button>
         <div class="toolbar__right">
           <button class="btn" data-act="stop">${icon('stop')}停止</button>
-          <button class="btn" data-act="pause">${icon('pause')}暂停</button>
-          <button class="btn btn--filled" data-act="start">${icon('play')}开始</button>
+          <button class="btn btn--filled" data-act="run">${icon('play')}开始</button>
         </div>
       </div>
-      <div class="toolbar__row">
-        <div class="toolbar__field">
+      <div class="toolbar__row toolbar__row--rules">
+        <div class="toolbar__field toolbar__field--tpl">
           <span class="toolbar__label">${icon('layers', 'sm')}模板</span>
           <select class="select" data-role="template" title="用哪套参数处理这批文件"></select>
         </div>
-        <div class="toolbar__field">
+        <div class="toolbar__field toolbar__field--profile">
           <span class="toolbar__label">${icon('filter', 'sm')}过滤</span>
           <select class="select select--profile" data-role="profile" title="本次运行按哪套过滤规则收文件"></select>
         </div>
+        <button class="btn btn--text" data-act="clear-all">${icon('trash')}清空</button>
         <div class="toolbar__right">
-          <span class="chip chip--muted" data-role="stat-total">0 个任务</span>
+          <span class="chip chip--accent" data-role="stat-progress">还没有任务</span>
           <span class="chip chip--ok" data-role="stat-done" hidden></span>
           <span class="chip chip--err" data-role="stat-failed" hidden></span>
-          <span class="chip chip--warn" data-role="stat-filter">${icon('filter')}<span data-role="filter-text">未启用过滤</span></span>
+          <span class="chip chip--info" data-role="stat-canceled" hidden></span>
+          <span class="chip chip--muted" data-role="stat-skipped" hidden></span>
+          <span class="chip chip--warn" data-role="stat-filter">${icon('filter')}<span data-role="filter-text">未启用匹配条件</span></span>
         </div>
       </div>
     </div>
@@ -280,33 +412,45 @@ export function createTasksView(ctx) {
         // 选目录，然后按**当前生效的那套方案**收，不再弹面板。规则归「过滤」页管 ——
         // 一批目录连着加好几次的时候，每次都要重新填一遍同样的条件才是真的烦。
         await reportAdd(await ctx.api.addFolderDialog(ctx.state.recursive));
-      } else if (act === 'start') {
-        ctx.state.autoStarted = true;
-        await ctx.api.startQueue();
-        toast('开始处理队列', 'success', 1800);
-      } else if (act === 'pause') {
-        const paused = await ctx.api.togglePause();
-        // The button's own label is the only feedback, and it comes from the stats
-        // broadcast rather than from this call -- which may not arrive if nothing
-        // else changes. Pull it so the label is right immediately. The rows are
-        // pulled too: freezing a process flips each running job's Frozen flag, and
-        // that is a per-row badge the toolbar event does not carry.
-        ctx.state.stats = await ctx.api.stats();
-        await refreshJobs();
-        renderToolbar();
-        toast(paused ? '已暂停，进行中的任务会保留进度' : '队列已继续', 'info', 2200);
+      } else if (act === 'run') {
+        // 一颗按钮两种动作，所以"该干什么"从**画这颗按钮的同一个函数**里取，不在这里
+        // 另判一遍 —— 另判的结果就是按钮写着「暂停」、按下去却在开始队列。
+        if (runButton(ctx.state.stats || {}).act === 'start') {
+          await ctx.api.startQueue();
+          toast('开始处理队列', 'success', 1800);
+        } else {
+          const paused = await ctx.api.togglePause();
+          // The button's own label is the only feedback, and it comes from the stats
+          // broadcast rather than from this call -- which may not arrive if nothing
+          // else changes. Pull it so the label is right immediately. The rows are
+          // pulled too: freezing a process flips each running job's Frozen flag, and
+          // that is a per-row badge the toolbar event does not carry.
+          ctx.state.stats = await ctx.api.stats();
+          await refreshJobs();
+          toast(paused ? '已暂停，进行中的任务会保留进度' : '队列已继续', 'info', 2200);
+        }
       } else if (act === 'stop') {
-        if (await confirmDialog('停止处理', '将取消正在运行的任务，并把排队中的任务标记为已取消。', '停止', true)) {
+        if (await confirmDialog('停止处理', '将取消正在运行的任务，并把排队中的任务标记为「取消」。', '停止', true)) {
           await ctx.api.stopQueue();
+          // 停止改的是**每一行**的状态（排队中 / 处理中 → 取消），而后端为它只广播
+          // stats（`Runner.CancelAll` 里就一句 `emitState`），不广播 `job:update` ——
+          // 行不会自己知道。少了这一拉，那一行还写着「处理中 64.4%」、进度条还在走、
+          // 行尾三颗按钮也停在旧的可点状态，而右上角已经在说"没有排队中的任务了"：
+          // 同一屏三个说法，谁都不知道该信哪个。
+          await refreshJobs();
           toast('已停止', 'warning');
         }
       } else if (act === 'retry') {
         const n = await ctx.api.retryFailed();
+        // 同上：失败 / 取消 / 跳过的变成「排队中」同样没有 `job:update`。
+        if (n > 0) await refreshJobs();
         toast(n > 0 ? `已重新排队 ${n} 个任务` : '没有需要重试的任务', n > 0 ? 'success' : 'info');
       } else if (act === 'clear-finished') {
         const n = await ctx.api.removeFinished();
         if (n > 0) await refreshJobs();
         toast(n > 0 ? `已清理 ${n} 个任务` : '没有可清理的任务', 'info');
+      } else if (act === 'clear-all') {
+        await clearAll();
       } else if (act === 'bulk-remove') {
         await removeChecked();
       } else if (act === 'bulk-delete') {
@@ -481,6 +625,36 @@ export function createTasksView(ctx) {
     }
     await refreshJobs();
     toast(n > 0 ? `已移除 ${n} 个任务` : '所选任务已被移除', 'success');
+  }
+
+  /**
+   * 清空整个列表。
+   *
+   * 和 `removeChecked` 是两条路而不是一条：那一颗作用在**勾着的行**上（勾选是列表上的
+   * 临时状态，换页、换筛选都会掉），这一颗作用在**整个队列**上 —— "我不想要这批了"
+   * 不该要求先把几百行勾一遍。
+   *
+   * 走 `ClearQueue`（后端 `Runner.ClearAll`）而不是把 id 都取出来喂 `RemoveJobs`：
+   * 后者在"这一屏只有一页"时看着一样，但它是个前端自己拼的批量，中间队列还在动的话
+   * 那份 id 快照就已经过时了。清空是一个原子动作，后端一把锁做完。
+   *
+   * **一个文件都不动**：它删的是行，不是输出。所以确认框里要把这句写全 —— 一颗叫
+   * 「清空」的按钮，最容易被读成"把文件也清掉"。
+   */
+  async function clearAll() {
+    const count = ctx.state.jobs.length;
+    if (!count) return;
+    if (!(await confirmDialog('清空任务列表',
+      `将移除列表里的全部 ${count} 个任务。已生成的文件不受影响，也不会删除任何源文件。`,
+      '清空', true))) return;
+    const removed = await ctx.api.clearQueue();
+    // 选中的那一行和勾选都随它一起去：面板底下正显示着某一行，行没了，那行日志留在
+    // 屏幕上就成了"写着一个不存在的文件"的日志。
+    ctx.state.selectedJobId = '';
+    local.checked.clear();
+    clearLog();
+    await refreshJobs();
+    toast(removed > 0 ? `已清空 ${removed} 个任务` : '列表已经是空的', removed > 0 ? 'success' : 'info');
   }
 
   /**
@@ -682,16 +856,6 @@ export function createTasksView(ctx) {
   }
 
   /**
-   * The queue keeps working on a job the filter is hiding, so the counter has to
-   * show both numbers: a total that silently dropped to the filtered count would
-   * say the other files were gone. It counts the filtered list, not the page --
-   * "50 / 300 个任务" would say the other 250 had been filtered away.
-   */
-  function filterSummary(shown, total) {
-    return local.statusFilter ? `${shown} / ${total} 个任务` : `${total} 个任务`;
-  }
-
-  /**
    * 填工具栏上那个方案下拉。
    *
    * 选项从 `ctx.state.filter.profiles` 来（后端已经保证了至少有一套），选中的是
@@ -734,16 +898,42 @@ export function createTasksView(ctx) {
 
   function renderToolbar() {
     const s = ctx.state.stats || {};
-    el.querySelector('[data-role=stat-total]').textContent
-      = filterSummary(local.filteredIds.length, ctx.state.jobs.length);
-    const done = (s.done || 0) + (s.warning || 0);
+    const c = queueCounts(s);
+    el.querySelector('[data-role=stat-progress]').textContent = c.progressText;
+    // 四颗分组计数只在非零时出现：一颗写着「失败 0」的 chip 不提供任何信息，而它占的
+    // 位置和颜色都在喊"出事了"。
+    //
+    // 「取消」单占一颗，因为它**不是失败**：用户按一下「停止」就会把排队中和
+    // 在跑的整批变成它，混进红色的「失败」里等于把用户自己按的那一下报成程序出错。
+    // 色调也要和「跳过」分开：暖灰说「这条被规则挡掉了」，冷紫说「这条是被人叫停的」。
+    // 反过来也不能不报 —— 它和另外三颗一起凑成进度那个分子，少一颗，进度上多出来的
+    // 那几个数就没地方对账了。
     const doneChip = el.querySelector('[data-role=stat-done]');
-    doneChip.hidden = done === 0;
-    doneChip.textContent = `完成 ${done}`;
+    doneChip.hidden = c.done === 0;
+    doneChip.textContent = c.doneText;
     const failChip = el.querySelector('[data-role=stat-failed]');
-    const bad = (s.failed || 0) + (s.canceled || 0);
-    failChip.hidden = bad === 0;
-    failChip.textContent = `失败 ${bad}`;
+    failChip.hidden = c.failed === 0;
+    failChip.textContent = c.failedText;
+    const cancelChip = el.querySelector('[data-role=stat-canceled]');
+    cancelChip.hidden = c.canceled === 0;
+    cancelChip.textContent = c.canceledText;
+    const skipChip = el.querySelector('[data-role=stat-skipped]');
+    skipChip.hidden = c.skipped === 0;
+    skipChip.textContent = c.skippedText;
+
+    // 「清空」只在未开始 / 停止之后亮（判据在 `queueIdle()`），空列表上也不亮：按下去
+    // 什么都不动的按钮和程序坏了长得一样，而这两档正是唯一会走到它的两条路 ——
+    // 加完一批想撤掉重来，或者停止之后把列表整个收走。
+    //
+    // 队列活着的时候（跑着、按着暂停、以及一批刚跑完）它是灰的，理由不是"危险"而是
+    // **没有意义**：那时候列表还是队列的，清掉的行只是从屏幕上消失，队列该跑的照样跑。
+    // 想清空就先按「停止」—— 它本来就把队列退回未开始，两颗按钮是同一件事的两半。
+    const clearBtn = el.querySelector('[data-act=clear-all]');
+    const idle = queueIdle(s);
+    clearBtn.disabled = !idle || c.total === 0;
+    clearBtn.title = !idle ? '先「停止」才能清空列表'
+      : c.total === 0 ? '列表已经是空的'
+        : `移除列表里的全部 ${c.total} 个任务（不动文件）`;
 
     // 过滤方案：这颗下拉说的是"添加文件夹 / 拖入文件夹时按哪一套规则收"。规则本身
     // 归「过滤」页管，这里只选一套 —— 一批目录连着加好几次的时候，每次都要重新填一遍
@@ -780,6 +970,7 @@ export function createTasksView(ctx) {
     if (f.includeExts?.length) parts.push(`仅 ${f.includeExts.join('/')}`);
     if (f.excludeExts?.length) parts.push(`跳过 ${f.excludeExts.join('/')}`);
     const tag = el.querySelector('[data-role=filter-text]');
+    const filterChip = el.querySelector('[data-role=stat-filter]');
     if (parts.length) {
       const act = f.action === 'move' ? '移动到' : f.action === 'copy' ? '复制到' : '留在原处';
       tag.textContent = parts.join(' · ')
@@ -787,27 +978,21 @@ export function createTasksView(ctx) {
     } else {
       tag.textContent = '未启用匹配条件';
     }
-    el.querySelector('[data-role=stat-filter]').classList.toggle('chip--accent', parts.length > 0);
+    // 窄窗口下这颗 chip 会被省略号截掉（见 `styles.css` 里那一段），所以完整句子必须
+    // 另有一处可看 —— 否则「跳过 >4GB · 跳过时长 <3s …」后面那半截就再也念不出来了。
+    filterChip.title = tag.textContent;
+    filterChip.classList.toggle('chip--accent', parts.length > 0);
 
-    const running = (s.running || 0) > 0;
-    // Three distinct states, not two: a queue nobody has started must not wear the
-    // 「暂停」label, because 暂停 on a queue that never began is a no-op the user
-    // cannot tell from a broken button. It also stays disabled until there is
-    // something to pause.
-    const started = s.started !== false;
-    const startBtn = el.querySelector('[data-act=start]');
-    const pauseBtn = el.querySelector('[data-act=pause]');
-    if (!started) {
-      pauseBtn.innerHTML = `${icon('pause')}暂停`;
-      pauseBtn.disabled = true;
-      pauseBtn.classList.remove('btn--tonal');
-    } else {
-      pauseBtn.innerHTML = s.paused ? `${icon('play')}继续` : `${icon('pause')}暂停`;
-      pauseBtn.disabled = false;
-      pauseBtn.classList.toggle('btn--tonal', !!s.paused);
-    }
-    // 开始 is the only way in, so it stays available while jobs are waiting.
-    startBtn.disabled = started && running && (s.pending || 0) === 0;
+    // 右上角两颗按钮：「停止」，和跟着状态走的那一颗（开始 / 暂停 / 继续）。停止的语义
+    // 永远是"把队列退回未开始"，所以它的标签固定；那一颗的判据全在 `runButton()` 里 ——
+    // 标签、图标、实底、灰不灰都是同一个状态自己决定的，所以四样一起画，别拆到
+    // `renderJobs()` 里去（那边三颗按钮各有一条自有判据，情况和这一颗不同）。
+    const b = runButton(s);
+    const runBtn = el.querySelector('[data-act=run]');
+    runBtn.innerHTML = `${icon(b.icon)}${b.label}`;
+    runBtn.title = b.title;
+    runBtn.classList.toggle('btn--filled', b.filled);
+    runBtn.disabled = !!b.disabled;
   }
 
   /**
@@ -829,7 +1014,7 @@ export function createTasksView(ctx) {
       // Saying so is also what stops a stopped bar from reading as a hang. The
       // percentage is deliberately left out -- the right-hand column already shows
       // it, and saying it twice reads as a rendering bug.
-      left = '已暂停，进度保留';
+      left = '暂停，进度保留';
     } else if (job.status === 'running') {
       const bits = [];
       if (job.speed > 0) bits.push(`${num(job.speed, 1)}x`);
@@ -1027,8 +1212,11 @@ export function createTasksView(ctx) {
     emptyEl.hidden = filtered.length > 0;
     if (!filtered.length) paintEmptyState(all.length);
     const hasFinished = all.some((j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status));
-    const canStart = all.some((j) => j.status === 'pending');
-    el.querySelector('[data-act=start]').disabled = !canStart;
+    // 队列那一颗（开始 / 暂停 / 继续）**不在这里**判：标签、图标、实底、灰不灰都是状态
+    // 自己决定的，归 `runButton()` 一处管，下面 `renderToolbar()` 会画。这里曾经也有一行
+    // `[data-act=start].disabled = !canStart` —— 那一颗后来改名叫 `data-act=run`，这行就
+    // 成了一个永远查不到元素的选择器（第 50 批删掉）。“空队列时开始该是灰的”这件事于是
+    // 只剩需求没人做；现在它就是 `runButton()` 里的 `disabled`（判据 `pending === 0`）。
     el.querySelector('[data-act=stop]').disabled = !all.some((j) => j.status === 'running' || j.status === 'preparing' || j.status === 'pending');
     el.querySelector('[data-act=retry]').disabled = !all.some((j) => ['failed', 'canceled', 'skipped'].includes(j.status));
     el.querySelector('[data-act=clear-finished]').disabled = !hasFinished;

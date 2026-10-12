@@ -66,12 +66,12 @@ func TestTrayTooltipTracksQueueState(t *testing.T) {
 		{
 			name: "暂停优先于处理中",
 			st:   engine.Stats{Total: 9, Pending: 6, Running: 3, Started: true, Paused: true},
-			want: "FFmpeg GUI — 0/9 完成 · 已暂停",
+			want: "FFmpeg GUI — 0/9 完成 · 暂停",
 		},
 		{
 			// Removed rows count as finished, exactly like the progress bar does:
 			// Stats.Finished is the one sum both of them read.
-			name: "跳过与已取消都算完成",
+			name: "跳过与取消都算完成",
 			st:   engine.Stats{Total: 4, Done: 1, Skipped: 1, Canceled: 1, Failed: 1, Started: true},
 			want: "FFmpeg GUI — 4/4 完成",
 		},
@@ -113,8 +113,13 @@ func TestStatsFinishedCountsEveryTerminalStatus(t *testing.T) {
 
 // --------------------------------------------------------------- history filter
 
+func stamp(y int, m time.Month, d, h, mi, s int) time.Time {
+	return time.Date(y, m, d, h, mi, s, 0, time.Local)
+}
+
+// day 是"秒为 0"的那一档：日期区间的用例大多只关心哪天，读起来短一点。
 func day(y int, m time.Month, d, h, mi int) time.Time {
-	return time.Date(y, m, d, h, mi, 0, 0, time.Local)
+	return stamp(y, m, d, h, mi, 0)
 }
 
 func recordIDs(list []store.Record) []string {
@@ -138,14 +143,21 @@ func equalIDs(a, b []string) bool {
 }
 
 // The date range has to agree with the timestamps the table puts on screen, and
-// the end date has to include its own last minute -- a filter that quietly drops
-// the evening of the day you picked reads as missing records.
+// the end of the range has to include the whole grain you filled in -- a filter
+// that quietly drops the evening of the day you picked reads as missing records.
+//
+// 「那一格」可以是天、分钟或秒（`datetime-local` 给出的是后两种）：填到哪一格就含哪一格，
+// 所以下面三档各钉一遍 —— 只看"整天"那档的话，`T15:04` 被当成 15:04:00 这一刻（而不是
+// 那一整分钟）也能过，而那正好会让结束端早收 59 秒。
 func TestHistoryDateRangeIsInclusiveAndUsesTheDisplayedTimestamp(t *testing.T) {
 	recs := []store.Record{
 		// Crosses midnight: dated by when it finished, not when it started.
 		{ID: "crossed", StartedAt: day(2026, 5, 1, 23, 0), EndedAt: day(2026, 5, 2, 0, 5)},
 		{ID: "early", StartedAt: day(2026, 5, 2, 0, 0)},
 		{ID: "late", StartedAt: day(2026, 5, 2, 23, 59), EndedAt: day(2026, 5, 2, 23, 59)},
+		// 同一分钟里的两条：秒那一档能不能分开它们，是"选到秒"这件事的唯一证据。
+		{ID: "sec30", StartedAt: stamp(2026, 5, 2, 15, 4, 30)},
+		{ID: "sec05", StartedAt: stamp(2026, 5, 2, 15, 4, 5)},
 		{ID: "next", StartedAt: day(2026, 5, 3, 0, 0)},
 		{ID: "stale", StartedAt: day(2026, 4, 30, 10, 0)},
 	}
@@ -157,7 +169,50 @@ func TestHistoryDateRangeIsInclusiveAndUsesTheDisplayedTimestamp(t *testing.T) {
 		{
 			name: "单日：两端都含当天",
 			q:    HistoryQuery{From: "2026-05-02", To: "2026-05-02"},
-			want: []string{"late", "crossed", "early"},
+			want: []string{"late", "sec30", "sec05", "crossed", "early"},
+		},
+		{
+			// 「整天」的新写法：和上面那条同义。它同时钉住了"结束端那一格是**不含**的
+			// 上界" —— 如果实现改成 `<=`，23:59:59 这一秒就会被多收一次。
+			name: "整天用 00:00 到 23:59:59 写出来，结果和只填日期一样",
+			q:    HistoryQuery{From: "2026-05-02T00:00", To: "2026-05-02T23:59:59"},
+			want: []string{"late", "sec30", "sec05", "crossed", "early"},
+		},
+		{
+			name: "填到分钟：含那一整分钟（15:04:00–15:04:59）",
+			q:    HistoryQuery{From: "2026-05-02T15:04", To: "2026-05-02T15:04"},
+			want: []string{"sec30", "sec05"},
+		},
+		{
+			name: "填到秒：只含那一秒",
+			q:    HistoryQuery{From: "2026-05-02T15:04:30", To: "2026-05-02T15:04:30"},
+			want: []string{"sec30"},
+		},
+		{
+			name: "秒那一档能分开同一分钟里的两条",
+			q:    HistoryQuery{From: "2026-05-02T15:04:05", To: "2026-05-02T15:04:05"},
+			want: []string{"sec05"},
+		},
+		{
+			// 补上秒的那一段就是**秒**那一格，不是分钟那一格。这条和上面「填到分钟」那条
+			// 差一个结果，正是"精度由写法决定"的证据。
+			//
+			// 界面走不到这一档：`datetime-local` 在秒为 0 时会把秒那一段整个省掉
+			// （实测 `T15:04:00` → `T15:04`），所以 `T…:00` 只有手输（或以后别的调用方）
+			// 才给得出。留着它是因为它也是合法的 `datetime-local` 值。
+			name: "补上 :00 是那一秒，不是那一分钟",
+			q:    HistoryQuery{From: "2026-05-02T15:04:00", To: "2026-05-02T15:04:00"},
+			want: []string{},
+		},
+		{
+			name: "只有起始时间（到分钟）",
+			q:    HistoryQuery{From: "2026-05-03T00:00"},
+			want: []string{"next"},
+		},
+		{
+			name: "只有结束时间（到分钟）",
+			q:    HistoryQuery{To: "2026-05-02T00:05"},
+			want: []string{"crossed", "early", "stale"},
 		},
 		{
 			name: "只有起始日期",
@@ -172,14 +227,21 @@ func TestHistoryDateRangeIsInclusiveAndUsesTheDisplayedTimestamp(t *testing.T) {
 		{
 			name: "跨天区间",
 			q:    HistoryQuery{From: "2026-05-01", To: "2026-05-03"},
-			want: []string{"next", "late", "crossed", "early"},
+			want: []string{"next", "late", "sec30", "sec05", "crossed", "early"},
 		},
 		{
 			// A half-filled or hand-typed value must not blank the list: an
 			// unusable date simply has no bound.
 			name: "填不成日期就当作没有这个边界",
 			q:    HistoryQuery{From: "2026-5-2", To: "不是日期"},
-			want: []string{"next", "late", "crossed", "early", "stale"},
+			want: []string{"next", "late", "sec30", "sec05", "crossed", "early", "stale"},
+		},
+		{
+			// 只到小时（`datetime-local` 给不出这种串，但手输给得出）同样当作没有边界：
+			// 一个填错一半的时间把整张表刷成空，比少筛一点难解释得多。
+			name: "只填到小时的串也当作没有这个边界",
+			q:    HistoryQuery{From: "2026-05-02T15", To: "2026-05-02T15:04:0"},
+			want: []string{"next", "late", "sec30", "sec05", "crossed", "early", "stale"},
 		},
 	}
 	for _, tc := range cases {
@@ -212,6 +274,95 @@ func TestHistorySortTogglesDirection(t *testing.T) {
 }
 
 // --------------------------------------------------------------- delete records
+
+// 「跳过」是 `filtered` 和 `skipped` 共用的说法，而**记录里存的、状态筛选比的都是这行字**
+// （`engine.Status.Label()` → `store.Record.Status` → `filterHistory` 逐字比较）。所以改词
+// 是一次会碰到磁盘数据的改动，这条钉住三件事：两个 enum 不合并、两边说法一致、老记录读进来
+// 会被归一成新说法。
+func TestSkippedLabelSharedAndLegacyAdopted(t *testing.T) {
+	// enum 仍然分开。`Finished()` 之外的判断（搬迁、日志、状态筛选的匹配集合）都按状态走，
+	// 合并 enum 是另一件事，不该搭这次改词的车。
+	if engine.StatusFiltered == engine.StatusSkipped {
+		t.Fatal("filtered 和 skipped 不该变成同一个状态值")
+	}
+	if got := engine.StatusFiltered.Label(); got != "跳过" {
+		t.Errorf("filtered 的说法 = %q, want 跳过", got)
+	}
+	if a, b := engine.StatusFiltered.Label(), engine.StatusSkipped.Label(); a != b {
+		t.Errorf("两个跳过状态应当同一个说法：%q vs %q", a, b)
+	}
+	// 状态名一律不带「已」——这一列里另外那几个（排队中 / 处理中 / 失败）从来不带，
+	// 只有三个终态带过「已」，那是 2026-10-12 之前的事。
+	for _, st := range []engine.Status{engine.StatusDone, engine.StatusCanceled, engine.StatusFiltered} {
+		if label := st.Label(); strings.HasPrefix(label, "已") {
+			t.Errorf("%s 的说法还带着「已」：%q", st, label)
+		}
+	}
+
+	// 三代说法一起过一遍：`已排除` 是 2026-10-11 之前的，`已跳过`/`已完成`/`已取消` 是
+	// 2026-10-12 之前的，最后一条是当前说法 —— 它必须原样不动。
+	list := []store.Record{
+		{ID: "legacy", Status: "已排除", Note: "体积 18.4 MB 小于下限 300 MB"},
+		{ID: "old-skip", Status: "已跳过"},
+		{ID: "old-done", Status: "已完成"},
+		{ID: "old-canceled", Status: "已取消"},
+		{ID: "now", Status: "跳过"},
+	}
+	adoptLegacyRecordStatuses(list)
+	for i, want := range []string{"跳过", "跳过", "完成", "取消", "跳过"} {
+		if list[i].Status != want {
+			t.Errorf("第 %d 条归一成 %q, want %q", i, list[i].Status, want)
+		}
+	}
+	// 原因不能被顺手擦掉：状态既然合并成一个说法，靠 `Note` 才分得出这个文件为什么没编码。
+	if list[0].Note != "体积 18.4 MB 小于下限 300 MB" {
+		t.Errorf("归一状态时动了 Note：%q", list[0].Note)
+	}
+
+	// 筛「跳过」要同时选中三代记录。老记录留在 `已排除` / `已跳过` 上的话，用户按新说法
+	// 筛，那批记录一条都不会出来 —— 而这不会报错，是静默少了一批。
+	if got := recordIDs(filterHistory(list, HistoryQuery{Status: "跳过"})); !equalIDs(got, []string{"legacy", "old-skip", "now"}) {
+		t.Errorf("按「跳过」筛 = %v, want [legacy old-skip now]", got)
+	}
+	// 逐字比较的另外两面：改过词的「完成」「取消」也筛得出来，而它们和「跳过」互不串台。
+	if got := recordIDs(filterHistory(list, HistoryQuery{Status: "完成"})); !equalIDs(got, []string{"old-done"}) {
+		t.Errorf("按「完成」筛 = %v, want [old-done]", got)
+	}
+	if got := recordIDs(filterHistory(list, HistoryQuery{Status: "取消"})); !equalIDs(got, []string{"old-canceled"}) {
+		t.Errorf("按「取消」筛 = %v, want [old-canceled]", got)
+	}
+}
+
+// 归一发生在**加载**里，不是调用方记得去调 —— 漏掉的后果是那批老记录静默地从筛选里消失。
+// 这条真的落一份带老说法的 history.json 到临时数据目录，再让 App 读它。
+func TestLoadHistoryAdoptsLegacyStatus(t *testing.T) {
+	defer store.SetDataDir(store.DataDir())
+	store.SetDataDir(t.TempDir())
+
+	if err := store.SaveHistory([]store.Record{
+		{ID: "a", Status: "已排除"},
+		{ID: "b", Status: "已跳过"},
+		{ID: "c", Status: "已完成"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{}
+	a.history = []store.Record{{ID: "stale", Status: "完成"}} // 加载前内存里是别的，确保真的重读了
+	a.loadHistory()
+
+	got := make([]string, 0, 3)
+	for _, r := range a.history {
+		got = append(got, r.Status)
+	}
+	if len(got) != 3 || got[0] != "跳过" || got[1] != "跳过" || got[2] != "完成" {
+		t.Errorf("加载后的状态 = %v, want [跳过 跳过 完成]", got)
+	}
+	// 内存里改了，盘上那份**不动**（下一次追加记录才整份重写）。
+	if raw := store.LoadHistory(); raw[0].Status != "已排除" {
+		t.Errorf("盘上那条不该被改写，得到 %q", raw[0].Status)
+	}
+}
 
 // 删除记录是破坏性的，所以三件事都要成立：只删点名的那些、剩下的原样不动、
 // 磁盘上那一份也跟着少掉。

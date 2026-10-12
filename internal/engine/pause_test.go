@@ -161,7 +161,7 @@ func TestResumeOnNothingFrozen(t *testing.T) {
 	}
 }
 
-// A thaw that cannot happen must leave the badge on. Showing 「已暂停（恢复失败）」
+// A thaw that cannot happen must leave the badge on. Showing 「暂停（恢复失败）」
 // is the difference between the user pressing 继续 again and believing the job is
 // running while its bar never moves. The failure needs a real syscall, so the
 // driving of it lives in pause_windows_test.go; what is pinned here is that

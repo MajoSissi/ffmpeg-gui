@@ -46,7 +46,7 @@ const eqCall = (name, fn, want) => {
  * 所以这里喂**有条件、没说明**的方案：没有说明才会落到念条件那条路上（`description`
  * 优先返回），而"条件是空的"和"摘要是函数写错了"在界面上长得一模一样。
  */
-const { profileSummary, rulesActive } = await import(
+const { profileSummary, rulesActive, draftKey } = await import(
   'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/filters.js'
 );
 eqCall('摘要：没说明时念条件（排除方向 + 只收一层 + 两种匹配方式）', () => profileSummary({
@@ -69,15 +69,314 @@ eqCall('摘要：不认识的 mode 也念得出来', () => profileSummary({
     filters: [{ mode: 'regex', value: 'foo' }] },
   files: { enabled: false, matchAll: false, exclude: false, filters: [] },
 }), '目录：条件 foo');
-// 关掉的那组也念条件：只写"已暂停"的话，用户记不住自己设过什么。
+// 关掉的那组也念条件：只写"未启用"的话，用户记不住自己设过什么。
+// 那一档的字是**开关自己的反面**（「启用」→「未启用」），不是「已暂停」：后者这一批刚
+// 成为队列状态的说法，而这只 chip 就印在任务页工具栏上。
 eqCall('摘要：关掉的那组也念', () => profileSummary({
-  name: '暂停着的那套',
+  name: '关着的那套',
   dirs: { enabled: false, matchAll: false, exclude: false, topOnly: false,
     filters: [{ mode: 'contains', value: 'cache' }] },
   files: { enabled: false, matchAll: false, exclude: false, filters: [] },
-}), '目录：已暂停 · 包含 cache');
+}), '目录：未启用 · 包含 cache');
 eqCall('两组空数组不算启用', () => rulesActive({ enabled: true, filters: [] }), false);
 eqCall('有条件且开着才算启用', () => rulesActive({ enabled: true, filters: [{ mode: 'contains', value: 'a' }] }), true);
+
+/* ------------------------------------------- 草稿快照：什么才算"有未保存的改动" */
+/*
+ * 用户报的：「我修改后点击保存了，点其他页面依旧弹出"放弃未保存的修改"」。
+ *
+ * 根因是**空条件行**。`paintGroup` 在一组一条条件都没有时补一行空的（那是"可以打字的
+ * 地方"，后端 `Normalize` 读进去也会丢掉），而预览那条路（`scanOf()` → `readForm()`）
+ * 会把页面读回草稿 —— 那个空行于是被当成了一条真条件，草稿凭空比后端那一份多出一行，
+ * `dirty()` 就永远是脏的，而且脏是保存**之后**那一次预览读回来的，所以"刚存过"也一样。
+ *
+ * 这里断言的是那个判据本身：空行不算改动，而有值的行被增删、名称被改都还是要算。
+ */
+const snapshotBase = {
+  name: '默认', description: '',
+  dirs: { enabled: true, filters: [{ mode: 'contains', value: 'FFMPEG' }], matchAll: false, exclude: false, topOnly: false },
+  files: { enabled: false, filters: [], matchAll: false, exclude: false },
+};
+const withRows = (group, rows) => ({ ...snapshotBase, [group]: { ...snapshotBase[group], filters: rows } });
+eqCall('快照：补出来的那一行空条件不算改动',
+  () => draftKey(withRows('files', [{ mode: 'contains', value: '' }])), draftKey(snapshotBase));
+eqCall('快照：只有空白的行也不算',
+  () => draftKey(withRows('dirs', [...snapshotBase.dirs.filters, { mode: 'glob', value: '   ' }])), draftKey(snapshotBase));
+eqCall('快照：清空一条有值的条件算改动',
+  () => draftKey(withRows('dirs', [])) !== draftKey(snapshotBase), true);
+eqCall('快照：多加一条有值的条件算改动',
+  () => draftKey(withRows('dirs', [...snapshotBase.dirs.filters, { mode: 'suffix', value: '__1' }])) !== draftKey(snapshotBase), true);
+eqCall('快照：名称多打一个空格算改动（不 trim）',
+  () => draftKey({ ...snapshotBase, name: '默认 ' }) !== draftKey(snapshotBase), true);
+eqCall('快照：字段顺序不同不算改动（后端结构体的顺序和页面读回来的不一定一样）',
+  () => draftKey({ files: snapshotBase.files, dirs: snapshotBase.dirs, description: '', name: '默认' }), draftKey(snapshotBase));
+
+/**
+ * 「匹配条件」的动词只能是「跳过」，而且只有这一个出处。
+ *
+ * 同一句话有两个渲染点：任务页工具栏那颗 chip（`tasks.js`）和模板页「跟随全局」时那行
+ * 说明（这里）。两处对不上（一处"跳过 <300MB"一处"排除 <300MB"），用户会以为是两个设置。
+ * 「排除」还是过滤页那个双向开关的一侧（收 ↔ 排除目录名）—— 同一个词指两件事，
+ * 用户得先猜这里说的是哪一个。
+ *
+ * 模板页那条只能这样验：`followHint` 是纯函数，可「跟随全局」的分支只在**非全局模板的
+ * 某一段跟着全局**时才上屏，而 mock 里那个模板的那一段有自己的值 —— 界面探针走不到这里。
+ */
+const { followHint } = await import(
+  'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/sections.js'
+);
+eqCall('模板页匹配条件：念的是「跳过」的边界', () => followHint('filter', {
+  filter: { minSizeMB: 300, maxLongEdge: 1280, excludeExts: ['webm', 'gif'], action: 'move', dir: 'D:/Media/small' },
+}), '跟随全局：跳过 <300 MB、跳过长边 >1280、跳过扩展名 webm/gif；被跳过的文件移动到源文件所在目录');
+eqCall('模板页匹配条件：没有条件时也不说「排除」', () => followHint('filter', { filter: {} }),
+  '跟随全局：全部文件都处理，没有跳过条件');
+
+/**
+ * 状态的界面说法：`filtered` 和 `skipped` 必须**同一个词**，而且和 Go 那边一字不差。
+ *
+ * 两个内部状态（被模板的匹配条件跳过 / 本次运行已处理过）对用户是同一件事，界面分两行
+ * 就是逼用户去猜内部 enum。值本身**不合并** —— 判断、搬迁、一批测试都按状态走 —— 所以
+ * "两边说法一致"这件事只能靠断言钉住，没有类型能替它说话。
+ *
+ * Go 侧的同一条断言在 `app_test.go` 的 `TestSkippedLabelSharedAndLegacyAdopted`：
+ * 那条钉的是 `engine.Status.Label()`，这条钉的是它的界面镜像 `ui.js` 的 `STATUS_META`。
+ */
+const { statusLabel, statusMeta } = await import(
+  'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/ui.js'
+);
+eqCall('状态说法：filtered 叫「跳过」', () => statusLabel('filtered'), '跳过');
+eqCall('状态说法：skipped 也叫「跳过」', () => statusLabel('skipped'), '跳过');
+eqCall('状态说法：两个跳过状态的 chip 样式一样', () => statusMeta('filtered').chip, statusMeta('skipped').chip);
+// 反证：真值来自 Go 的 `Label()`，挪到界面这层还要看得见差别 —— 一句「都一样」若是把
+// 整个表都写成同一个词，上面三条照样全绿。
+eqCall('状态说法：跳过和完成不是一回事', () => statusLabel('filtered') !== statusLabel('done'), true);
+// **状态名一律不带「已」**（2026-10-12 统一）：整张表扫一遍，比逐条列举能漏掉的地方少。
+// 「暂停」是 `statusLabel` 在看 frozen 时替换出来的那一个，也在这条约束里。
+eqCall('状态说法：一个都不带「已」',
+  () => ['pending', 'preparing', 'running', 'done', 'warning', 'failed', 'canceled',
+    'skipped', 'filtered'].map((s) => statusLabel(s)).filter((l) => l.startsWith('已')).join(','), '');
+eqCall('状态说法：暂停的徽标也不带「已」', () => statusLabel('running', true), '暂停');
+// 记录页那张状态表按**字面量**取色调，键必须和后端 `Label()` 同词 —— 差一个字，
+// 那一行的 chip 就会悄悄退回默认灰（不会报错，只是颜色不对）。
+eqCall('状态说法：取消不是跳过那个色调',
+  () => statusMeta('canceled').chip !== statusMeta('skipped').chip, true);
+
+/**
+ * 队列那一颗按钮的状态机：**开始 → 暂停 → 继续**，回到「开始」的唯一条路是「停止」。
+ *
+ * 为什么钉在这里：三态全是**看后端两个布尔量**推出来的，界面探针只能量到"此刻"那一个
+ * （mock 开局就是 `started=true`），量不到另外两条支路；而支路写错的表现是"按钮写着
+ * 暂停、按下去却在开始队列"—— 这种错在截图里一个像素都看不出来。
+ *
+ * 「停止之后」和「批次跑完」这两条必须都钉：它们的差别就是用户那条要求本身。
+ */
+const { runButton } = await import(
+  'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/tasks.js'
+);
+eqCall('队列按钮：没开始过 = 开始', () => runButton({ started: false, pending: 3 }).label, '开始');
+eqCall('队列按钮：开始过、跑着 = 暂停', () => runButton({ started: true, paused: false, running: 1 }).label, '暂停');
+eqCall('队列按钮：开始过、按住了 = 继续', () => runButton({ started: true, paused: true, running: 1 }).label, '继续');
+// 停止（后端把 `armed` 清掉）是回到「开始」的唯一条路。
+eqCall('队列按钮：停止之后回到开始', () => runButton({ started: false, paused: false }).label, '开始');
+// 反证：一批跑完不等于停止 —— 队列还是活的，之后加进来的文件会自己跑。
+eqCall('队列按钮：批次跑完仍停在暂停（不是回到开始）',
+  () => runButton({ started: true, paused: false, running: 0, pending: 0 }).label, '暂停');
+// 动作和标签出自同一个函数：动作错位就是"写着暂停、按下去在开始"。
+eqCall('队列按钮：只有未开始那一态的动作才是 start',
+  () => ['start', 'toggle', 'toggle'].map((_, i) => runButton(
+    [{ started: false }, { started: true, paused: false }, { started: true, paused: true }][i]
+  ).act).join(','), 'start,toggle,toggle');
+// 重按一次的颜色：开始和继续是实底（把活推起来的那一下），暂停是普通（活正在跑）。
+eqCall('队列按钮：开始是实底', () => runButton({ started: false }).filled, true);
+eqCall('队列按钮：暂停不是实底', () => runButton({ started: true, paused: false }).filled, false);
+eqCall('队列按钮：继续是实底', () => runButton({ started: true, paused: true }).filled, true);
+// 「开始」灰不灰：判据是 `pending`（有没有一行等着跑），**不是** `total`（列表里有几行）。
+// 空队列上按它只是把队列武装起来，屏幕上一行都不会动 —— 那和程序坏了长得一样。
+eqCall('队列按钮：空队列的「开始」灰着', () => runButton({ started: false, pending: 0, total: 0 }).disabled, true);
+eqCall('队列按钮：有排队中的就能按', () => runButton({ started: false, pending: 3, total: 9 }).disabled, false);
+// 非空列表但一行可跑的都没有（全是完成 / 取消 / 跳过）—— 按「开始」同样没反应，
+// 这时候旁边那颗「重试失败」是亮的，想接着跑走那条路。所以判据不能写成 `total === 0`。
+eqCall('队列按钮：列表非空但没得跑，一样灰着',
+  () => runButton({ started: false, pending: 0, total: 5, done: 5 }).disabled, true);
+// 「暂停」「继续」看的是队列这个开关本身，和列表里有几行无关：队列活着的时候把之后加进来
+// 的文件按住是一件真事，哪怕此刻一行都没有。
+eqCall('队列按钮：暂停不灰', () => runButton({ started: true, paused: false, pending: 0, total: 0 }).disabled, false);
+eqCall('队列按钮：继续不灰', () => runButton({ started: true, paused: true, pending: 0, total: 0 }).disabled, false);
+// 反证：三态里只有「开始」有灰的余地，另外两态永远可点。
+eqCall('队列按钮：只有开始那一态会灰',
+  () => [[false, false], [true, false], [true, true]].map(([started, paused]) => runButton({
+    started, paused, pending: 0, total: 0,
+  }).disabled).join(','), 'true,false,false');
+
+/**
+ * 上面钉的是纯函数，下面走一遍 **mock 自己的**那三个队列接口。
+ *
+ * mock 是镜子：`StopQueue` 要是没把 `started` 清掉，浏览器预览里那颗按钮停止之后就会
+ * 继续显示「暂停」，而真程序里它是「开始」—— 预览比真实现好看，正是最坏的一种偏差。
+ *
+ * `eqCall` 只收同步函数而 `api.stats()` 是异步的，所以先取快照再断言。
+ */
+const eqRunLabel = async (name, want) => {
+  const snap = await api.stats();
+  eqCall(name, () => runButton(snap).label, want);
+};
+
+// 先备份：`StopQueue` 会把排队中的状态改成「取消」（照 `Runner.CancelAll`），下面要
+// 按 id 还回去 —— 否则后面几十条断言看到的是另一个世界（`pending` 变 0、`canceled` 变 4）。
+const keepJobs = (await api.jobs()).slice();
+const statBackup = new Map(keepJobs.map((j) => [j.id, { status: j.status, progress: j.progress, message: j.message }]));
+
+await api.startQueue();
+await eqRunLabel('mock 队列：开始之后是暂停', '暂停');
+await api.togglePause();
+await eqRunLabel('mock 队列：按一下暂停之后是继续', '继续');
+await api.togglePause();
+await eqRunLabel('mock 队列：再按一下回到暂停', '暂停');
+const beforeStop = await api.stats();
+await api.stopQueue();
+await eqRunLabel('mock 队列：停止之后是开始', '开始');
+// 停止 = 把排队中的全丢成「取消」（`Runner.CancelAll`），所以此刻一行可跑的都没有 ——
+// 那颗「开始」是灰的，旁边「重试失败」是亮的（它管 failed/canceled/skipped）。
+// 这两条同时钉住 mock 的 `StopQueue` 有没有照抄那一步：漏掉的话预览里 pending 还是 3、
+// 按钮还亮着，而真程序里已经是灰的。
+const stoppedSnap = await api.stats();
+eqCall('mock 队列：停止之后没有排队中的了', () => stoppedSnap.pending, 0);
+// 丢掉的不是消失：它们排进了「取消」，数目正好是刚才还在排队 / 在跑的那些（不写死，
+// mock 加一行也不会假红）。
+eqCall('mock 队列：丢掉的那些进了「取消」',
+  () => stoppedSnap.canceled - beforeStop.canceled, beforeStop.pending + beforeStop.running);
+eqCall('mock 队列：停止之后「开始」灰着', () => runButton(stoppedSnap).disabled, true);
+// 再把行全移掉（用户真的会这么干）：还是灰的，total 归零。
+await api.removeJobs(keepJobs.map((j) => j.id));
+const emptySnap = await api.stats();
+eqCall('mock 队列：清空之后「开始」灰着', () => runButton(emptySnap).disabled, true);
+eqCall('mock 队列：清空之后 total 归零', () => emptySnap.total, 0);
+// 还原：行塞回去、状态按 id 还回去，后面的断言看到的是同一个世界。
+(await api.jobs()).push(...keepJobs);
+for (const j of await api.jobs()) Object.assign(j, statBackup.get(j.id) || {});
+await api.startQueue();
+
+/**
+ * 右上角那五颗计数：**总任务进度 / 完成 / 失败 / 取消 / 跳过**。
+ *
+ * 第一条是这条改动的核心约定：**百分比取后端的 `progress`、前端不自己除一遍** ——
+ * 托盘悬停文字念的是同一个字段，两处不一致的表现是"悬停说 89%、工具栏说 88%"。
+ * 所以这里故意喂一个和计数器**对不上**的 `progress`（0.44 配 5/9）：真值若改回
+ * `finished / total`，这条立刻报红 —— 而它报红是对的，那时候"谁说了算"就变了。
+ *
+ * 另外几条钉的是分组口径：同一类任务在下拉里算一类、在计数里也该算一类（筛出 5 条、
+ * chip 说 3 条是最难解释的一类不一致）。**取消是唯一不合的那一个** —— 状态筛选里它
+ * 本来就单占一项，所以这里也单占一颗，而且**不能算进「失败」**：用户按一下「停止」，
+ * 排队中和在跑的整批都会变成它，算成失败就是把自己按的那一下报成程序出错。
+ *
+ * 但"不算失败"不等于"不算数"：它仍然是一行的终态，仍然要进进度那个分子。所以这里两条
+ * 一起钉 —— 只钉前者的话，把 canceled 从 `finished` 里一起摘掉也能全绿，而那会让
+ * `进度 12 / 12` 和四颗 chip 对不上账。
+ */
+const { queueCounts, queueIdle } = await import(
+  'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/tasks.js'
+);
+/** 一份固定的 stats 底子，只改被测的那一项。 */
+const counts = (over) => queueCounts({
+  total: 9, done: 1, warning: 1, failed: 1, canceled: 0, skipped: 1, filtered: 1, progress: 0.44, ...over,
+});
+eqCall('计数：百分比取后端的 progress，不在前端除一遍', () => counts({}).progressText, '进度 5 / 9 · 44%');
+eqCall('计数：分子是四个分组之和', () => counts({}).finished, 5);
+eqCall('计数：完成含「完成(警告)」', () => counts({}).doneText, '完成 2');
+eqCall('计数：取消不算在「失败」里', () => counts({ canceled: 3 }).failedText, '失败 1');
+// 反证：真失败还照旧算 —— 上面那条只看 `canceled` 的话，把 failed 整个漏掉也能全绿。
+eqCall('计数：「失败」只数真失败', () => counts({ failed: 4 }).failedText, '失败 4');
+eqCall('计数：取消单占一颗', () => counts({ canceled: 3 }).canceledText, '取消 3');
+// 不算失败，但**仍然算数**：多出来的那一项是 progress 的分子里的一部分。
+eqCall('计数：取消仍然进进度分子', () => counts({ canceled: 3 }).finished, 8);
+// 四组之和必须正好是进度分子，一颗不多一颗不少 —— 这是"加了第五颗 chip"能有的唯一前提。
+eqCall('计数：四颗分组之和 = 进度分子',
+  () => {
+    const c = counts({ canceled: 3 });
+    return c.done + c.failed + c.canceled + c.skipped === c.finished;
+  }, true);
+eqCall('计数：被匹配条件跳过的算在「跳过」里', () => counts({ skipped: 0, filtered: 4 }).skippedText, '跳过 4');
+eqCall('计数：空队列不写「0 / 0 · 0%」', () => queueCounts({ total: 0 }).progressText, '还没有任务');
+eqCall('计数：空队列里没有 NaN', () => /NaN/.test(queueCounts({ total: 0 }).progressText), false);
+// 反证：一整排字段缺席时也要念出五个 0，而不是把 undefined 拼进字符串里。
+eqCall('计数：字段缺席当 0',
+  () => ['doneText', 'failedText', 'canceledText', 'skippedText'].map((k) => queueCounts({})[k]).join(' '),
+  '完成 0 失败 0 取消 0 跳过 0');
+
+/**
+ * 「清空」那颗按钮亮不亮（`queueIdle`）。
+ *
+ * 判据只有一条：后端的 `armed` 是空的 —— 「未开始」和「停止之后」落在同一个值上
+ * （`Runner.Disarm` 与 `CancelAll` 都只清 `armed`），所以这里量"停止之后"和量"从没
+ * 开始过"是同一个断言。
+ *
+ * 反过来那三条才是重点：**队列活着的时候它必须是灰的**。跑着、按着暂停、以及一批刚
+ * 跑完（`armed` 还在 —— 队列还是活的，之后加进来的文件会自己跑）都算活着；写漏任何
+ * 一条，用户就能在一片"还在转"的任务上按「清空」。
+ */
+eqCall('清空：还没开始过 = 可点', () => queueIdle({ started: false, total: 3 }), true);
+eqCall('清空：停止之后 = 可点', () => queueIdle({ started: false, paused: false, total: 3 }), true);
+eqCall('清空：跑着 = 灰着', () => queueIdle({ started: true, paused: false, running: 2 }), false);
+eqCall('清空：按着暂停 = 灰着', () => queueIdle({ started: true, paused: true }), false);
+// 一批跑完不等于停止：队列还活着，这会儿清空它等于把还在队列手里的行丢掉。
+eqCall('清空：一批跑完（队列仍armed）= 灰着',
+  () => queueIdle({ started: true, paused: false, running: 0, pending: 0, total: 9 }), false);
+// 反证：三态里只有 `started === false` 那一态亮着 —— 上面四条若都写成同一个词，这条报红。
+eqCall('清空：只有"没开始"那一态可点',
+  () => [[false, false], [true, false], [true, true]].map(([started, paused]) => queueIdle({
+    started, paused, total: 3,
+  })).join(','), 'true,false,false');
+// 载荷里没有这个键时按"已经开始了"处理：这颗按钮管的是不可撤销的清空，**灰着比亮着安全**。
+// （读法和 `runButton()` 的 `s.started !== false` 一致 —— 两处对同一个字段的解释必须一样。）
+eqCall('清空：stats 里没有 started 时灰着', () => queueIdle({ total: 3 }), false);
+eqCall('清空：没有 stats 时灰着', () => queueIdle(undefined), false);
+
+/**
+ * mock 那份 stats 现在是**现算**的（`api.js` 的 `mockQueueStats()`），所以"进度"和
+ * 计数器必须自洽 —— 它手写过 `progress: 0.44` 配 5/9（差 12 个百分点），而工具栏把
+ * 这两个数印在同一颗 chip 上。手写的那份还不会跟着 `RemoveJob` 走：`total` 会留在 9。
+ */
+const LIVE = await api.stats();
+const JOBS = await api.jobs();
+eqCall('mock：total = jobs 行数', () => LIVE.total, JOBS.length);
+eqCall('mock：进度和计数器自洽', () => {
+  const fin = LIVE.done + LIVE.warning + LIVE.failed + LIVE.canceled + LIVE.skipped + LIVE.filtered;
+  return Math.round((fin / LIVE.total) * 100);
+}, Math.round(LIVE.progress * 100));
+// 拿最后一行试一次移除：手写的那份 stats 纹丝不动，现算的这份必须跟着掉。
+// （`eqCall` 只收同步函数，所以先把快照 await 出来再断言。）
+const lastJob = JOBS[JOBS.length - 1];
+await api.removeJobs([lastJob.id]);
+const afterRemove = await api.stats();
+eqCall('mock：total 跟着移除走', () => afterRemove.total, JOBS.length - 1);
+// 塞回去 —— `RemoveJobs` 是**重新赋值**数组，所以得重新取一份引用，塞回末尾正好还原顺序。
+(await api.jobs()).push(lastJob);
+const afterRestore = await api.stats();
+eqCall('mock：塞回之后 total 复原', () => afterRestore.total, JOBS.length);
+
+/**
+ * 移除必须**广播** `queue:state`，和 Go 里那三行 `r.emitState()` 一一对应。
+ *
+ * 这条漏了在界面上看不出来，而且症状很具体：前端 `removeOne()` 自己会重拉 `Jobs()`，
+ * 所以**行**照样消失；但工具栏那几颗计数 chip 是 `onStats()` 画的，只有广播叫得动它
+ * —— 于是「移除 3 行之后进度还写着 9」。数出来的东西和数它的那一列打架，比两个都停在
+ * 旧值更像"这程序算错了"。
+ *
+ * 两次移除分别对应 Go 的两个分支：`RemoveJob` 无条件发，`RemoveJobs` 只在真删掉东西
+ * 时发（空批次什么都不发）。所以这里也照一次空批次，钉住"不是有调用就发"。
+ */
+const { on: onEvent } = await import('file:///D:/Code-Project/ffmpeg-gui/frontend/dist/api.js');
+const seen = [];
+const offEvents = onEvent('queue:state', (s) => seen.push(s));
+const victim = (await api.jobs()).slice(-1)[0];
+await api.removeJob(victim.id);
+eqCall('mock：移除之后广播了 stats', () => seen.length, 1);
+eqCall('mock：广播的就是移除后的那一份', () => seen[0] && seen[0].total, JOBS.length - 1);
+await api.removeJobs([]);
+eqCall('mock：空批次不广播（照 Go 的 removed > 0）', () => seen.length, 1);
+// 塞回去，别让后面的断言看到少一行的队列。
+(await api.jobs()).push(victim);
+offEvents();
 
 /** 一组目录规则。字段顺序和 `normalizeDirRules` 一致，好让整条规则能直接比。 */
 const dirs = (filters, extra = {}) => ({
@@ -175,6 +474,30 @@ eq('排除方向总数 = 全部 - 跳过的', exAll.totalFiles, 31 - 11);
 eq('排除方向的结果顶上写着"排除"', [exAll.filtering, exAll.exclude], [true, true]);
 eq('只看一层时一个子目录都不跳（根本没往里看）', [exTop.dirsTotal, exTop.totalFiles], [0, 3]);
 eq('总数不为负', exAll.totalFiles >= 0 && exTop.totalFiles >= 0, true);
+
+/* ----------------------- 排除方向：用户挑的那个文件夹自己的名字也过条件 -------------- */
+/*
+ * 用户报的第二条：条件「包含 FFMPEG + 排除」，在「试一个文件夹」里挑了一个自己就叫
+ * `FFMPEG__1__H265_Slow_21_2560` 的目录（里面正好 48 个文件），面板上却是
+ * 「排除 0 个目录 · 收 48 个文件」—— 按条件读，那个文件夹显然是"整个都不要"，而这个
+ * 结果和"排除根本没生效"长得一模一样。
+ *
+ * 夹具里根叫 big，所以拿"条件包含 big + 排除"复现同一件事：整个文件夹都不要，而列表里
+ * 那一行就是它自己（还要报出会跟着没的文件数）。这一判据在"往下收多深"之前，含子目录和
+ * 只看一层都给"一个都不收"，差别只在那一行数的是整棵还是一层。
+ */
+const exSelf = dirs(contains('big'), { exclude: true });
+const exSelfAll = await scan(exSelf, NONE, true);
+const exSelfTop = await scan(exSelf, NONE, false);
+log('排除 + 挑中的文件夹自己命中（含子目录）:', JSON.stringify(exSelfAll));
+log('排除 + 挑中的文件夹自己命中（只看一层）:', JSON.stringify(exSelfTop));
+eq('挑中的文件夹自己命中 → 一个文件都不收', [exSelfAll.dirsTotal, exSelfAll.totalFiles], [1, 0]);
+eq('那一行就是它自己，并报出会跟着没的文件数',
+  exSelfAll.dirs.map((d) => [d.dir, d.name, d.rel, d.files]),
+  [['D:\\Media\\big', 'big', 'big', 31]]);
+eq('只看一层同样整个不要（那一行数的是一层的文件）',
+  [exSelfTop.dirsTotal, exSelfTop.totalFiles, exSelfTop.dirs[0].files], [1, 0, 3]);
+eq('名字不命中时排除方向照旧（整个文件夹减去命中的子树）', exAll.totalFiles, 31 - 11);
 
 /* ------------------------------- 两组规则互不相干：文件规则只管文件 -------------- */
 // 夹具里没有 .tmp，所以"只收 h265"那套方案自带的文件规则（排除 .tmp）在夹具上是一条
@@ -407,6 +730,82 @@ eq('「基本配置」还在', (await api.templates())[0].id, 't-global');
 let goneErr = '';
 try { await api.deleteTemplates(['t-global']); } catch (e) { goneErr = e.message; }
 eq('只交全局那一套 = 一个都没删掉', goneErr, '要删的模板已经不在了');
+
+/**
+ * 「清空」（`ClearQueue`）在 mock 里也照抄一遍 Go 的 `Runner.ClearAll`。
+ *
+ * 这一颗**只清列表，不动文件**，而且它和 `armed` 无关 —— 后端不判，判的是前端那颗按钮
+ * 灰不灰（`queueIdle`，上面钉过了）。所以这里不去摆 `armed`，只量清空本身做了什么。
+ *
+ * 桩成 `() => 0` 的话，"清空"在浏览器预览里就是一颗按下去什么都不动的按钮。**行**是
+ * 前端自己重拉 `Jobs()` 画的，所以桩着也看不出来；看得出来的是工具栏那几颗计数 chip
+ * （`onStats()` 画的），它们只有广播才叫得动 —— 少了这一句，清完之后列表空了、进度还
+ * 写着 9。所以这里数的是广播。
+ */
+const keepForClear = (await api.jobs()).slice();
+const seenClear = [];
+const offClear = onEvent('queue:state', (s) => seenClear.push(s));
+const cleared = await api.clearQueue();
+eq('清空：返回清掉的行数', cleared, keepForClear.length);
+eq('清空：列表真的空了', (await api.jobs()).length, 0);
+eq('清空：广播了新的 stats', seenClear.length, 1);
+eq('清空：广播的那份 total 归零', seenClear[0] && seenClear[0].total, 0);
+// 空列表上再清一次：返回 0，但**照样广播** —— 照 Go 的 `ClearAll` 那句无条件的
+// `r.emitState()`（同一个文件里 `RemoveJobs` 是有条件的那种，两个不一样，别对齐错了）。
+const beforeSecond = seenClear.length;
+eq('清空：空列表返回 0', await api.clearQueue(), 0);
+eq('清空：空列表也广播（照 Go 的无条件 emit）', seenClear.length, beforeSecond + 1);
+offClear();
+// 塞回去，别让这一段的最后一步改动落到"脚本跑完之后"的状态上（虽然是最后一段）。
+(await api.jobs()).push(...keepForClear);
+eq('清空：还原之后 total 回到原样', (await api.stats()).total, keepForClear.length);
+
+/* ------------------------------------------------ 记录页的时间区间（精确到秒） */
+
+/**
+ * 记录页那两个框是 `datetime-local step="1"`，也就是**能填到秒**；规矩是一句话：
+ * **填到哪一格，就包含那一整格。**
+ *
+ * 这条为什么要钉在 mock 上：真正做筛的是 Go 的 `parseBound`，mock 这边是它的**镜子**
+ * （`api.js` 的 `bound`），而镜子错一个等号（`t > to` vs `t >= to`）或者少一档写法，
+ * 表现是"预览里多含 / 少含整整一格"—— 和真机长得一模一样，肉眼永远看不出来。
+ *
+ * 判据挑的是**用户看得见的那件事**：把列表上「完成时间」那一列的字（`2026-05-02 15:04:33`）
+ * 抄进筛选框，那条记录就必须在里面；而结束端往回挪一秒，它就必须出去。两句话合起来正好
+ * 钉住"那一格是闭的、下一格是开的"。
+ */
+const pad2 = (n) => String(n).padStart(2, '0');
+/** 把一条记录的 `endedAt`（ISO / UTC）转成框里那种**本地**写法，精确到秒。 */
+const localStamp = (iso, back = 0) => {
+  const d = new Date(Date.parse(iso) - back);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+    + `T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+};
+const allRecords = (await api.history({ limit: 500 })).items;
+const probe = allRecords[0];
+const secs = localStamp(probe.endedAt);
+const gotIds = async (q) => (await api.history({ ...q, limit: 500 })).items.map((r) => r.id);
+const has = (ids) => ids.includes(probe.id);
+
+eq('时间区间：抄那一列的字（到秒）能筛到这一条', has(await gotIds({ from: secs, to: secs })), true);
+eq('时间区间：结束端往回挪一秒就筛不到（那一格是闭的）',
+  has(await gotIds({ from: secs, to: localStamp(probe.endedAt, 1000) })), false);
+eq('时间区间：只填到分钟 = 含那一整分钟（不是含那一刻）',
+  has(await gotIds({ from: secs.slice(0, 16), to: secs.slice(0, 16) })), true);
+eq('时间区间：只填日期 = 含那一整天（界面给不出这一档，手输 / 后端调用走这条）',
+  has(await gotIds({ from: secs.slice(0, 10), to: secs.slice(0, 10) })), true);
+// 精度由**写法**决定：补上 `:00` 是那一"秒"那一格，和只写到分钟的"那一整分钟"差一个结果。
+// 界面走不到这一档（`datetime-local` 在秒为 0 时会把秒那一段省掉，实测过），但判据在这里，
+// 镜子写错了就没人拦得住。
+eq('时间区间：补上 :00 是那一秒，不是那一分钟',
+  has(await gotIds({ from: `${secs.slice(0, 16)}:00`, to: `${secs.slice(0, 16)}:00` })), false);
+// 手输一半的串（`2026-5-2` 那种）当作**这一端不设边界**：不清空整张表。
+eq('时间区间：填不成时间就当没有这个边界',
+  (await gotIds({ from: '2026-5-2', to: '不是日期' })).length,
+  (await gotIds({})).length);
+// 反证：上面那几条"能筛到"对一个"永远返回全部"的桩**也全绿**，所以两头各往外挪一格再量
+// 一次 ——「从」这一端往后挪一秒，它就必须消失。
+eq('时间区间：起始端往后挪一秒就筛不到', has(await gotIds({ from: localStamp(probe.endedAt, -1000) })), false);
 
 log(bad ? `\n${bad} FAILED` : '\nall mock checks passed');
 process.exit(bad ? 1 : 0);

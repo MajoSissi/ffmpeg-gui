@@ -98,8 +98,13 @@ function condRow(mode, value, off) {
  * 一套方案会收什么，一句话。
  *
  * 两组分开念，中间用「＋」连起来：它们说的是两件事，用「·」连成一串会读成"这些条件
- * 同时作用在同一个东西上"。开关关掉的那组也要把条件念出来（`已暂停 · 前缀 cache`）：
+ * 同时作用在同一个东西上"。开关关掉的那组也要把条件念出来（`未启用 · 前缀 cache`）：
  * 只写"关闭"的话，用户记不住自己是不是设过一套条件，也想不到打开就能用。
+ *
+ * 那一档的字是**开关自己的反面**（开关叫「启用」→ 关着叫「未启用」），不是「已暂停」：
+ * 「暂停」这一批刚成为队列状态的说法（`ui.js` 的 frozen 那行、托盘那行），而这只 chip
+ * 就印在任务页工具栏上 —— 两处同名会让「过滤：目录 未启用」被读成"队列被按住了"。
+ * 状态词一律不带「已」，这条也一起守着。
  *
  * 列表那一行的副标题优先用方案自己的**说明** —— 说明是写给人看的，条件摘要不是：
  * 两套方案只差一个条件的先后顺序时，条件摘要上看着一模一样，而那多半不是用户区分
@@ -108,11 +113,11 @@ function condRow(mode, value, off) {
 export function profileSummary(profile) {
   if (profile?.description) return profile.description;
   const dirs = groupText(profile?.dirs, {
-    paused: '已暂停',
+    paused: '未启用',
     reverse: '排除',
     extra: (r) => (r?.topOnly ? '只收这一层' : ''),
   });
-  const files = groupText(profile?.files, { paused: '已暂停', reverse: '排除' });
+  const files = groupText(profile?.files, { paused: '未启用', reverse: '排除' });
   const parts = [];
   if (dirs) parts.push(`目录：${dirs}`);
   if (files) parts.push(`文件：${files}`);
@@ -145,6 +150,40 @@ function groupText(rules, { paused, reverse, extra }) {
 export function rulesActive(r) {
   return !!r?.enabled
     && (r?.filters || []).some((c) => String(c?.value ?? '').trim() !== '');
+}
+
+/**
+ * 草稿的内容快照，「有没有未保存的改动」拿它比。
+ *
+ * 和 `JSON.stringify(draft)` 的差别只有一处，而这一处正是这个判断的全部难点：**空条件
+ * 行不算改动**。
+ *
+ *   - `paintGroup` 在一组一条条件都没有时会补一行空的 —— 那是"可以打字的地方"，不是
+ *     一条改动；后端 `Normalize` 读进去的时候本来也会把它丢掉。
+ *   - 而「试一个文件夹」那条路（`scanOf()` → `readForm()`）会把页面读回草稿，那个空行
+ *     于是一条条地被当成真条件收了进来。
+ *
+ * 两件事凑在一起：草稿凭空比后端那一份多出一行空条件，`dirty()` 就永远是脏的。用户
+ * 什么都没再动、甚至刚按过「保存」，点别的页面照样弹「放弃未保存的改动」—— 因为脏是
+ * 保存**之后**那一次预览读回来的。空行一律不参与比较；而**把一条有值的条件清空**仍然
+ * 算改动（两边长度不同，照样脏）。
+ *
+ * 名称和说明**不 trim**：多打一个空格是用户做的事，该算改动 —— 真正提交的那一份由
+ * 后端 `Normalize` 收拾。
+ */
+export function draftKey(p) {
+  if (!p) return '';
+  const group = (r) => {
+    const out = { ...(r || {}) };
+    out.filters = (out.filters || []).filter((c) => String(c?.value ?? '').trim() !== '');
+    return out;
+  };
+  return JSON.stringify({
+    name: p.name ?? '',
+    description: p.description ?? '',
+    dirs: group(p.dirs),
+    files: group(p.files),
+  });
 }
 
 export function createFiltersView(ctx) {
@@ -190,7 +229,7 @@ export function createFiltersView(ctx) {
   // "回到上一次保存时的样子"。
   let originalKey = '';
 
-  const dirty = () => !!draft && JSON.stringify(draft) !== originalKey;
+  const dirty = () => !!draft && draftKey(draft) !== originalKey;
 
   /**
    * 列表多选。勾着的和"正在编辑的"分开存：右键菜单里的「复制」「删除」作用在后者身上，
@@ -473,11 +512,12 @@ export function createFiltersView(ctx) {
     }
     selected = p.name;
     // 深拷一份当草稿：直接改后端交回来的那份，会让"取消/放弃"变成不可能，也会让
-    // `dirty()` 永远为假。键的顺序和后端结构体一致，`dirty()` 才不会平白报脏。
+    // `dirty()` 永远为假。快照交给 `draftKey` 算 —— 它把空条件行摘掉，所以"进这一页
+    // 之后只是打了个试目录"不会被当成改动（见那个函数的注释）。
     draft = JSON.parse(JSON.stringify({
       name: p.name, description: p.description || '', dirs: p.dirs || {}, files: p.files || {},
     }));
-    originalKey = JSON.stringify(draft);
+    originalKey = draftKey(draft);
     if (!ctx.state.filter) ctx.state.filter = {};
     renderList();
     paintBody();

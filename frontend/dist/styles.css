@@ -35,6 +35,12 @@
   --err-bg: #3a1a19;
   --muted: #a6aab4;
   --muted-bg: #24272e;
+  /* 第四种语义色：**不是问题，也不是"没发生"**。目前只有「取消」用它 —— 那是用户
+     自己按下「停止」的结果，和「跳过」的暖灰必须是两个颜色。暖灰说"这一条被规则挡掉了、
+     没做过什么"，冷紫说"这一条本来要做，是被人叫停的"。两种都灰成一片的话，一眼扫过去
+     分不清"这几行是我按停的"还是"这几行是规则不要的"。 */
+  --info: #c3b2f0;
+  --info-bg: #2a2440;
 
   --radius-s: 8px;
   --radius: 12px;
@@ -380,6 +386,7 @@ input, textarea, select, .selectable { user-select: text; }
 .chip--err { background: var(--err-bg); color: var(--err); }
 .chip--accent { background: var(--primary-container); color: var(--on-primary-container); }
 .chip--muted { background: var(--muted-bg); color: var(--muted); }
+.chip--info { background: var(--info-bg); color: var(--info); }
 .chip--click { cursor: pointer; }
 .chip--click:hover { filter: brightness(1.15); }
 /* chip 也可以是一颗按钮（工具栏上的筛选入口）—— 把 UA 的按钮皮去掉，其余照 .chip。 */
@@ -497,14 +504,54 @@ button.chip:disabled { opacity: .42; cursor: not-allowed; filter: none; }
 }
 .toolbar__right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .toolbar .select { width: auto; min-width: 168px; max-width: 260px; }
-/* 任务页的工具栏分两行。
+/* 任务页的工具栏分两行，**上下对齐**。
    单行放不下全部动作，而让 flex 自己换行的话，两组按钮的位置会随窗口宽度跳来跳去 ——
    「开始」有时在这一行末尾、有时被挤到下一行。两行各有自己的左组和右组，位置固定：
-   第一行是"动队列"（加文件、筛状态、重试、清理）+ 三个队列开关，第二行是"进队列的东西
-   按什么处理"（模板、过滤两套规则）+ 计数。左组管的事跟着鼠标从加文件读到开始，右组
-   一直是那三颗。 */
-.toolbar--rows { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 8px; }
-.toolbar__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+   第一行是"动队列"（加文件、筛状态、重试、清理）+ 两颗队列开关，第二行是"进队列的东西
+   按什么处理"（模板、过滤两套规则、清空）+ 计数。
+
+   对齐的意思是第二行每一样都落在第一行某一样的**正下方**：那颗「模板」从「添加文件」
+   的左缘起、到「添加文件夹」的右缘止，「过滤」的左缘就是上面「状态筛选」的左缘，
+   「清空」在「重试失败」底下，右边那一排 chip 和「开始」共一条右缘。两行是"同一批列的
+   两个区段"，不是"两排各自居中的控件" —— 眼睛沿着列读下去时，一列里上下两样是一件事。
+   实现全在下面那张网格里。 */
+.toolbar--rows {
+  /* 一张网格，两行共用同一组列宽 —— 这就是"上下对齐"的全部实现。
+     六个栏位对应第一行从左到右那六样东西（加文件 / 加文件夹 / 状态筛选 / 重试失败 /
+     清理已完成 / 右侧那两颗），第二行每一项钉在其中之一的**正下方**（见下面那四条
+     `grid-area`）。列宽由两行里更宽的那个决定，于是"模板 = 添加文件 + 间距 + 添加文件
+     夹"、"过滤的左缘 = 状态筛选的左缘"这些都不必写死像素。 */
+  display: grid;
+  grid-template-columns: max-content max-content max-content max-content max-content minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
+  flex-wrap: nowrap;
+}
+/* 两行那层 div 只为了让 HTML 读起来是一行一行的，盒子本身摊平（`display: contents`），
+   两个 `.toolbar__row` 的子元素直接成为同一张网格的格子。拆成两张网格是另一条路，
+   但那样**列宽各算各的** —— 第二行那颗「模板」永远差几个像素对不齐，而那正是要修的
+   东西。CJK 字体下这一差是 10px，肉眼一眼就看出来。 */
+.toolbar--rows .toolbar__row { display: contents; }
+
+/* 第二行各项的位置。**行号也写死**（`grid-area` 四个值 = 行起 / 列起 / 行止 / 列止）：
+   只给 `grid-column` 不给 `grid-row` 的话，这一项会被放进"第一个放得下的行"，也就是
+   第一行 —— 「模板」会跑到「添加文件」旁边去。这一条是 grid 排版里最容易踩的坑。 */
+.toolbar--rows .toolbar__field--tpl { grid-area: 2 / 1 / 3 / 3; }
+.toolbar--rows .toolbar__field--profile { grid-area: 2 / 3 / 3 / 4; }
+.toolbar--rows [data-act="clear-all"] { grid-area: 2 / 4 / 3 / 5; }
+/* 右侧那一组跨掉最后两栏再靠右：`minmax(0,1fr)` 那一栏吃掉所有余量，chip 落点仍然和
+   上面「停止 / 开始」的右缘同一条线。 */
+.toolbar--rows .toolbar__row--rules > .toolbar__right { grid-area: 2 / 5 / 3 / 7; }
+
+/* 第二行右边那几颗 chip 的长度**没有上限能设**，这是个已知缺陷，别再试着修：
+   那颗「匹配条件」的正文由模板决定（八个界全填满要 735px），而它撑不长之后就整行溢出，
+   溢出的那截被 `.app` 的 `overflow: hidden` **静默切掉** —— 没有滚动条、没有省略号。
+   根因在页面外壳这一层：`.page` 的 `min-width: auto` 让它被表格的最小宽度顶住（1340 的
+   窗口下约 1194px），于是这一行永远拿不到收缩压力，写多少 `min-width: 0` /
+   `text-overflow: ellipsis` 都**不会生效**（2026-10-11 实测过，一条都没动）。
+   要真修得动 `.page` 那条 `min-width`，那是全部五页共用的布局，别顺手改。
+   现在能做的只有 `.filterChip.title`（`tasks.js`），全部条件在悬停里念得出来。 */
 
 /* 下拉框的行内标注。第二行两个下拉里装的是**数据**（模板名、方案名），而不是像第一行
    那个状态下拉一样自带解释（"排队中""已完成"念出来就知道它是什么）。两个下拉本身长得

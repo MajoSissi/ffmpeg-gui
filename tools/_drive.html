@@ -225,6 +225,9 @@ f.addEventListener('load', function () {
       // 第二行那两个下拉旁边的行内标注。少了它们，"模板"和"过滤"两个框长得一模一样，
       // 而下拉里装的是模板名和方案名，念不出来。
       '.page:not([hidden]) .toolbar__label',
+      // 「清空」（第二行第 4 栏）和它旁边那颗「取消」计数（冷紫，和「跳过」的暖灰分开）。
+      '.page:not([hidden]) [data-act="clear-all"]',
+      '.page:not([hidden]) [data-role="stat-canceled"]',
       '.fscan-page .tpl-row',
       '.fscan-page .tpl-row.is-active',
       '.fscan-page .badge',
@@ -297,9 +300,17 @@ f.addEventListener('load', function () {
       })(),
       '   已勾选: ' + d.querySelectorAll(live + ' tbody input[type=checkbox]:checked').length
         + ' · 表头框: ' + ((d.querySelector(live + ' [data-role="check-all"]') || {}).checked),
-      '   日期框: from=' + (d.querySelector(live + ' [data-role="from"]') || {}).value
-        + ' to=' + (d.querySelector(live + ' [data-role="to"]') || {}).value
-        + ' 排序=' + (d.querySelector(live + ' [data-role="sort"]') || {}).value,
+      // 日期区间：两个框的 type / step / 值一起报。`type=date` 和 `datetime-local` 在截图里
+      // 长得像，而"能不能填到秒"只由 `step` 说得出来（默认 60 = 只到分钟）。
+      '   日期框: from=[' + (function () {
+        var i = d.querySelector(live + ' [data-role="from"]');
+        return i ? i.type + ' step=' + (i.step || '（默认）') + ' 「' + i.value + '」' : '（没有）';
+      })()
+        + '] to=[' + (function () {
+          var i = d.querySelector(live + ' [data-role="to"]');
+          return i ? i.type + ' step=' + (i.step || '（默认）') + ' 「' + i.value + '」' : '（没有）';
+        })()
+        + '] 排序=' + (d.querySelector(live + ' [data-role="sort"]') || {}).value,
       '   首行: ' + cellText(rowsNow[0], 1) + ' | 完成时间 ' + cellText(rowsNow[0], 8),
       '   末行: ' + cellText(rowsNow[rowsNow.length - 1], 1) + ' | 完成时间 ' + cellText(rowsNow[rowsNow.length - 1], 8),
     ].join('\n') : '   （这一页没有分页条）';
@@ -440,6 +451,95 @@ f.addEventListener('load', function () {
         + '」· 弹窗 ' + (d.querySelector('.modal-root.is-open') ? '开着' : '关着'),
     ].join('\n') : '   （这一页不是「过滤」页）';
 
+    // 任务页工具栏的两行**上下对齐**：第二行每一样都要落在第一行某一样的正下方。
+    //
+    // 这件事只有量边框说得出来。差 10px 在截图里"看着差不多"（第一版就是这么漏过去的：
+    // 「模板」比它上面那两颗按钮加起来宽 10px，于是「过滤」被往右推了 10px），而它恰好
+    // 就是用户报的那条。所以这里不比"像不像"，比四个等号。
+    var tb = d.querySelector(live + ' .toolbar--rows');
+    var tbLines = tb ? (function () {
+      var r1 = tb.querySelectorAll('.toolbar__row')[0];
+      var at = function (row, sel) { return row && row.querySelector(sel); };
+      var box = function (el) {
+        if (!el) return null;
+        var b = el.getBoundingClientRect();
+        return { l: Math.round(b.left), r: Math.round(b.right) };
+      };
+      var els = {
+        '添加文件': at(r1, '[data-act="add-files"]'),
+        '添加文件夹': at(r1, '[data-act="add-folder"]'),
+        '状态筛选': at(r1, '[data-role="status-filter"]'),
+        '重试失败': at(r1, '[data-act="retry"]'),
+        '开始': at(r1, '[data-act="run"]'),
+        '模板框': at(tb, '.toolbar__field--tpl'),
+        '过滤框': at(tb, '.toolbar__field--profile'),
+        '清空': at(tb, '[data-act="clear-all"]'),
+        'chip组': at(tb, '.toolbar__row--rules > .toolbar__right'),
+      };
+      var missing = Object.keys(els).filter(function (k) { return !els[k]; });
+      if (missing.length) return '   缺元素: ' + missing.join(' / ');
+      var e = {};
+      Object.keys(els).forEach(function (k) { e[k] = box(els[k]); });
+      // 四个等号各自只回答一条：模板那一条左右缘都要落在那两颗按钮上，其余两条各比
+      // 一个缘 —— 「清空」宽度和「重试失败」不一样（前者两个字），比右缘只会比出一条
+      // 永远为假的断言。
+      var verdict = function (name, ok) { return '   ' + (ok ? '对齐  ' : '**错位** ') + name; };
+      var line = function (label, keys) {
+        return '   ' + label + ': ' + keys.map(function (k) {
+          return k + ' ' + e[k].l + '..' + e[k].r;
+        }).join(' · ');
+      };
+      return [
+        line('第一行', ['添加文件', '添加文件夹', '状态筛选', '重试失败', '开始']),
+        line('第二行', ['模板框', '过滤框', '清空', 'chip组']),
+        verdict('模板框 = 添加文件左缘 / 添加文件夹右缘',
+          e['模板框'].l === e['添加文件'].l && e['模板框'].r === e['添加文件夹'].r),
+        verdict('过滤框 = 状态筛选（左右缘）',
+          e['过滤框'].l === e['状态筛选'].l && e['过滤框'].r === e['状态筛选'].r),
+        verdict('清空 = 重试失败（左缘）', e['清空'].l === e['重试失败'].l),
+        verdict('chip 组右缘 = 开始右缘', e['chip组'].r === e['开始'].r),
+      ].join('\n');
+    })() : '   （这一页没有两行工具栏）';
+
+    // 状态用词与色调。两件事都只活在词汇表里，探针能做的就是把**渲染出来的那行字**和
+    // **它穿的 class** 一起报出来：用词该一个都不带「已」，色调上「取消」不该和「跳过」
+    // 同色（两条都灰成一片时，截图看着"挺一致"，而那正是要修的东西）。
+    var statusLines = (function () {
+      // `[data-role="status"]` **不止一个页面在用**：设置页（"所有修改已保存"）、模板页、
+      // 过滤页各有一处，都是**状态文字**而不是下拉框。所以这里必须按选择器取、并自己判
+      // 有没有 `.options` —— 直接 `Array.from(s.options)` 会在那三页上抛
+      // `TypeError: undefined is not iterable`，而那正是 2026-10-12 发现的：五页里有三页
+      // 的探针**一个字都不出**（异常没人接，见下面 `step` 结尾那一层的说明）。
+      var opts = function (sel) {
+        var s = d.querySelector(sel);
+        if (!s) return '（这一页没有）';
+        if (!s.options) return '（这里不是下拉：「' + (s.textContent || '').trim().slice(0, 20) + '」）';
+        return Array.from(s.options).map(function (o) { return o.textContent; }).join(' / ');
+      };
+      var chips = Array.from(d.querySelectorAll(live + ' .grid-table tbody .chip'));
+      var uniq = Array.from(new Set(chips.map(function (c) {
+        return c.textContent.trim() + '＝' + c.className.replace(/\bchip\b\s*/, '').trim();
+      })));
+      var withYi = chips.filter(function (c) { return c.textContent.trim().indexOf('已') === 0; }).length;
+      // 工具栏那排计数（`data-role="stat-*"`）**也是状态词的露出面**：进度的分子由四颗分组
+      // 相加，分组各自的字样必须和状态筛选、状态列同一套词。这里连色调一起报 ——
+      // 计为 0 的那几颗是收起的（`hidden`），"收起"和"没画出来"是两件事。
+      var counts = ['stat-progress', 'stat-done', 'stat-failed', 'stat-canceled', 'stat-skipped']
+        .map(function (r) {
+          var c = d.querySelector(live + ' [data-role="' + r + '"]');
+          if (!c) return r + '（没有）';
+          if (c.hidden) return r + '（收起）';
+          return c.textContent.trim() + '＝' + c.className.replace(/\bchip\b\s*/, '').trim();
+        }).join(' · ');
+      return [
+        '   任务页状态筛选: ' + opts(live + ' [data-role="status-filter"]'),
+        '   记录页状态筛选: ' + opts(live + ' [data-role="status"]'),
+        '   表内状态 chip: ' + (uniq.length ? uniq.join(' · ') : '（没有）'),
+        '   计数 chip: ' + counts,
+        '   以「已」开头的状态 chip: ' + withYi + ' 个（该是 0）',
+      ].join('\n');
+    })();
+
     // The app no longer prints a page title anywhere -- the rail's active item is the
     // only place the page is named -- so that label is what identifies where we landed.
     var active = d.querySelector('.rail__item.is-active');
@@ -452,6 +552,8 @@ f.addEventListener('load', function () {
       + '\n\n分页条:\n' + pagerLines
       + '\n\n定位:\n' + locateLines
       + '\n\n工具栏方案下拉:\n' + chipLines
+      + '\n\n工具栏两行对齐:\n' + tbLines
+      + '\n\n状态用词与色调:\n' + statusLines
       + '\n\n「过滤」页:\n' + scanLines
       + '\n\nselect options (value list → current):\n' + selLines.join('\n')
       // 驱动漏点的选择器要一并报出来：漏点之后探针量到的是「上一次的状态」，
@@ -578,9 +680,19 @@ f.addEventListener('load', function () {
                   // 打的字之后还要再等：输入框上的防抖（过滤面板是 180ms）和它后面那次
                   // 取数都得先落地，否则量到的还是打之前的那一屏。
                   return setTimeout(() => {
-                    if (p.get('probe')) { probe(); return; }
-                    if (p.get('expr')) { runExpr(p.get('expr')); return; }
-                    return afterActs();
+                    // **这一层必须自己兜住。** 它是另一个 task，外面那个 try 只盖到
+                    // `applyType()` 和"把定时器排上"这两句 —— 回调里抛出来的东西谁都接不到。
+                    // 曾经这里裸奔，代价是 2026-10-12 查了半天的一个哑巴：`probe()` 在
+                    // 模板 / 过滤 / 设置三页上抛（`opts()` 把一个状态文字当成了下拉框），
+                    // 异常直接掉在地上，表现是 `drive.py` 只报一句"链条断在半路"、连
+                    // `#probeout` 都没有，和"驱动压根没跑"长得一模一样。
+                    try {
+                      if (p.get('probe')) { probe(); return; }
+                      if (p.get('expr')) { runExpr(p.get('expr')); return; }
+                      return afterActs();
+                    } catch (e) {
+                      fail('probe / expr', e);
+                    }
                   }, p.get('type') ? 600 : 0);
                 } catch (e) {
                   fail('probe', e);

@@ -76,7 +76,7 @@ func (a *App) startup(ctx context.Context) {
 	store.PruneLogs(logCfg.LogDir, int64(logCfg.LogMaxSizeMB)*1024*1024, logCfg.LogKeepDays)
 
 	a.histMu.Lock()
-	a.history = store.LoadHistory()
+	a.loadHistory()
 	a.histMu.Unlock()
 
 	a.runner.Configure(engine.Providers{
@@ -334,7 +334,7 @@ func (a *App) SaveTemplate(t store.Template) (store.Template, error) {
 	// The 「已处理过的文件」record means "this file came out of this template
 	// already". Editing the template changes what it would produce, so the record
 	// no longer describes anything: drop it, otherwise re-queueing the same
-	// folder after a change would report 已跳过 for every file and quietly not
+	// folder after a change would report 跳过 for every file and quietly not
 	// apply the change.
 	a.runner.ForgetTemplate(t.ID)
 	a.emit("templates:changed", list)
@@ -1353,8 +1353,11 @@ func fileExists(p string) bool {
 type HistoryQuery struct {
 	Keyword string `json:"keyword"`
 	Status  string `json:"status"`
-	// From / To are inclusive local dates (YYYY-MM-DD) matched against the moment a
-	// record is dated by -- the same one the list's 完成时间 column shows.
+	// From / To 是**本地时间**的边界，收三种写法：`2006-01-02`（整天）、
+	// `2006-01-02T15:04`（到分钟）、`2006-01-02T15:04:05`（到秒）—— 后两种就是
+	// `datetime-local` 那个输入框交出来的样子（秒数是 0 时它会把那一段省掉）。
+	//
+	// 比的是这条记录「完成时间」那一格显示的那个时刻（`recordTime`），不是另一个。
 	From string `json:"from"`
 	To   string `json:"to"`
 	// Sort is "" / "newest" for 最新在前, "oldest" for 最早在前.
@@ -1380,31 +1383,100 @@ func recordTime(r store.Record) time.Time {
 	return r.StartedAt
 }
 
-// parseDay reads a YYYY-MM-DD date in the local zone. An unusable string simply
-// has no bound: the value comes from a date picker that can also be cleared.
-func parseDay(s string) (time.Time, bool) {
+// boundLayouts 是日期 / 时间边界认的三种写法，从粗到细。
+//
+// 顺序就是精度：`time.Parse` 拿 "2026-05-02T00:00" 去套 `2006-01-02` 会失败（多出来的
+// 那一段解析不掉），所以在前面那个匹配上之后还得往后找 —— 这也是为什么这里不是三个
+// `if` 而是排好序的一张表。`step` 是"这一格有多长"，见 `parseBound`。
+var boundLayouts = []struct {
+	layout string
+	step   time.Duration
+}{
+	{"2006-01-02", 0}, // 0 = 整天，加一天要用 AddDate（跨月 / 跨年自己会进位）
+	{"2006-01-02T15:04", time.Minute},
+	{"2006-01-02T15:04:05", time.Second},
+}
+
+// parseBound reads one end of the date filter.
+//
+// **填到哪一格，就包含那一整格。** 只填日期 = 那一整天，填到分钟 = 那一分钟，填到秒 =
+// 那一秒。所以「到」那一端算出来的是"所填精度的下一格起点"，而「从」这一端就是所填的
+// 那一刻本身。这条规则是为了让手输的每一档都有确定的意思：填「05-02」和填「05-02 15:04」
+// 都不必让人去想"含不含这一刻"—— 答案永远是"含你填的那一格"。
+//
+// 收三种写法的原因是界面上那个 `datetime-local`：它给出 `2026-05-02T15:04`，而秒数是 0
+// 时会把秒那一段整个省掉。**不认识的值当作"没有这个边界"**（不是报错）：这个框允许手输，
+// 而一个填错一半的日期把整张表刷成空，比少筛一点难解释得多。
+func parseBound(s string, end bool) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}, false
 	}
-	t, err := time.ParseInLocation("2006-01-02", s, time.Local)
-	if err != nil {
-		return time.Time{}, false
+	for _, l := range boundLayouts {
+		t, err := time.ParseInLocation(l.layout, s, time.Local)
+		if err != nil {
+			continue
+		}
+		if end {
+			if l.step == 0 {
+				return t.AddDate(0, 0, 1), true // 整天：到第二天零点（含当天最后一秒）
+			}
+			return t.Add(l.step), true
+		}
+		return t, true
 	}
-	return t, true
+	return time.Time{}, false
+}
+
+// loadHistory reads history.json into memory and adopts the status labels that
+// changed wording. Caller holds histMu.
+//
+// 读和归一放在同一个函数里，是为了让"加载必归一"这件事没法漏掉：老记录里存的是改词之
+// 前那行字，漏掉归一的后果不是报错，而是那些记录**静默地**从状态筛选里消失。
+func (a *App) loadHistory() {
+	a.history = store.LoadHistory()
+	adoptLegacyRecordStatuses(a.history)
+}
+
+// legacyRecordStatuses 是历史上用过、现在不再用的那几种状态说法。
+//
+// 键是**老记录里存的那行字**（`store.Record.Status` 存的就是界面上那行字），值是它对应
+// 的内部状态 —— 目标标签仍然从 `Status.Label()` 现取，不在这里写第二份字面量：写死的话，
+// 下次改词又会漏掉这里。
+//
+// 三条来自 2026-10-12 那次统一（状态名一律不带「已」），一条来自 2026-10-11。
+var legacyRecordStatuses = map[string]engine.Status{
+	"已排除": engine.StatusSkipped,  // filtered 在 2026-10-11 之前的说法
+	"已跳过": engine.StatusSkipped,  // skipped / filtered 在 2026-10-12 之前的说法
+	"已完成": engine.StatusDone,     // done 在 2026-10-12 之前的说法
+	"已取消": engine.StatusCanceled, // canceled 在 2026-10-12 之前的说法
+}
+
+// adoptLegacyRecordStatuses rewrites the status labels that changed wording.
+//
+// 记录里 `status` 存的就是**界面上的那行字**（`engine.Status.Label()`），而状态筛选是拿
+// 它逐字比较的（见 `filterHistory`）。所以改说法必须同时处理老记录：留着 `已跳过` 的话，
+// 用户按「跳过」筛一条老记录都筛不出来，而且那些行的 chip 也认不出自己是什么了。
+//
+// 只在内存里改，**不写回文件**（和 `store` 那几处老配置迁移同一个做法）：下一次追加记录
+// 会整份重写 `history.json`，那时自然就归一了。为此不必在启动时多写一次盘。
+func adoptLegacyRecordStatuses(list []store.Record) {
+	for i := range list {
+		if st, ok := legacyRecordStatuses[list[i].Status]; ok {
+			list[i].Status = st.Label()
+		}
+	}
 }
 
 // filterHistory returns the records matching q, newest first unless q.Sort asks
 // otherwise. Pure, so the rules above can be pinned without an App.
 func filterHistory(list []store.Record, q HistoryQuery) []store.Record {
 	kw := strings.ToLower(strings.TrimSpace(q.Keyword))
-	from, hasFrom := parseDay(q.From)
-	to, hasTo := parseDay(q.To)
-	if hasTo {
-		// To is inclusive: something finished at 23:50 on the end date belongs to
-		// that date, so the bound is the start of the following one.
-		to = to.AddDate(0, 0, 1)
-	}
+	// 两端都由 `parseBound` 收成"边界在那一刻"：`hasTo` 那边拿到的是**不含**的上界，
+	// 下面比的时候一句 `!t.Before(to)` 就够，这里不再自己往回减一秒 —— 减一秒是"包含
+	// 到 23:59:59"那半秒，而它和"包含到 23:59 这一分钟"在秒粒度上不是一件事。
+	from, hasFrom := parseBound(q.From, false)
+	to, hasTo := parseBound(q.To, true)
 
 	out := make([]store.Record, 0, len(list))
 	for _, r := range list {
@@ -1888,6 +1960,9 @@ func (a *App) refreshTrayTooltip(st engine.Stats) {
 // trayTooltip renders a queue state as hover text, or "" for "nothing to report",
 // which the tray turns back into its idle title.
 //
+// 队列状态的说法和界面上那几处是**同一套词**：未开始 / 处理中 / 暂停（`ui.js` 的队列
+// chip、`app.js` 顶栏那颗）。状态名一律不带「已」——「已暂停」是 2026-10-12 之前的写法。
+//
 // An empty queue has to fall back rather than keep the last count: "3/9 完成" over
 // an icon whose queue was cleared is worse than no information at all, and it is
 // exactly what the old code did -- it only ever wrote the tooltip when Total > 0.
@@ -1898,7 +1973,7 @@ func trayTooltip(st engine.Stats) string {
 	parts := []string{fmt.Sprintf("%d/%d 完成", st.Finished(), st.Total)}
 	switch {
 	case st.Paused:
-		parts = append(parts, "已暂停")
+		parts = append(parts, "暂停")
 	case !st.Started:
 		parts = append(parts, "未开始")
 	case st.Running > 0:

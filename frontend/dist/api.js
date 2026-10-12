@@ -147,7 +147,7 @@ const MOCK_STATE = {
     mkJob('j3', '旅行vlog-竖屏.mp4', 2160, 3840, 'pending', 0, { tw: 1440, th: 2560 }),
     mkJob('j4', '会议录屏_2024.mkv', 1920, 1080, 'pending', 0),
     mkJob('j5', '宣传片_最终版.mov', 4096, 2304, 'done', 1, { elapsedMs: 412_000, speed: 3.1, tw: 2560, th: 1440, size: 2_940_000_000, after: mkInfo('宣传片_最终版.mp4', 2560, 1440, { size: 462_000_000, duration: 212, bitRate: 17_400_000, vc: 'hevc' }) }),
-    mkJob('j6', '手机拍摄-慢动作.mp4', 3840, 2160, 'warning', 1, { elapsedMs: 96_400, message: '已完成（2 条警告）', warnings: ['输出文件复核失败: Invalid data found when processing input', '源文件已移动到 D:/Media/error'], tw: 2560, th: 1440, size: 1_240_000_000, sourceMovedTo: 'D:/Media/error/手机拍摄-慢动作.mp4', after: mkInfo('手机拍摄-慢动作.mp4', 2560, 1440, { size: 188_000_000, duration: 96, bitRate: 15_600_000, vc: 'hevc' }) }),
+    mkJob('j6', '手机拍摄-慢动作.mp4', 3840, 2160, 'warning', 1, { elapsedMs: 96_400, message: '完成（2 条警告）', warnings: ['输出文件复核失败: Invalid data found when processing input', '源文件已移动到 D:/Media/error'], tw: 2560, th: 1440, size: 1_240_000_000, sourceMovedTo: 'D:/Media/error/手机拍摄-慢动作.mp4', after: mkInfo('手机拍摄-慢动作.mp4', 2560, 1440, { size: 188_000_000, duration: 96, bitRate: 15_600_000, vc: 'hevc' }) }),
     mkJob('j7', '古老素材.avi', 720, 576, 'failed', 0.14, { elapsedMs: 31_000, error: 'av_interleaved_write_frame(): Invalid argument' }),
     mkJob('j8', '超短视频.mp4', 1280, 720, 'filtered', 0, { message: '体积 18.4 MB 小于下限 300 MB；已移动到 D:/Media/small', sourceMovedTo: 'D:/Media/small/超短视频.mp4' }),
     mkJob('j9', '损坏文件.mp4', 0, 0, 'skipped', 0, { message: '输出文件已存在，已跳过' }),
@@ -163,10 +163,43 @@ const MOCK_STATE = {
   ],
 };
 
+/**
+ * 从 `MOCK_STATE.jobs` **现算**一份 stats，照 `runner.statsLocked()` 抄。
+ *
+ * mock 里那份 `MOCK_STATE.stats` 是手写的，于是它和 jobs 是两份互不相干的东西：删掉
+ * 一行之后 `total` 还停在 9、`pending` 还停在 3，而工具栏现在把「进度 8 / 9 · 89%」
+ * 写在同一颗 chip 上 —— 预览里那个 9 是假的，真程序（`Total = len(r.jobs)`）会说 8。
+ * 手写的那份还犯过一次更直接的错：`progress: 0.44` 配 "done+warning+failed+skipped+
+ * filtered = 5 / 9"，5/9 是 56%。差一个数字就是"这程序算错了"。
+ *
+ * 只现算**由 jobs 决定**的那几项，`started` / `paused` / `workers` **故意**留着手写：
+ * 它们是队列的开关状态，不是数出来的。`Running` 把 `preparing` 也算进去，和 Go 一致。
+ */
+function mockQueueStats() {
+  const jobs = MOCK_STATE.jobs;
+  const by = (st) => jobs.filter((j) => j.status === st).length;
+  const terminal = (j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status);
+  const total = jobs.length;
+  return {
+    ...MOCK_STATE.stats,
+    total,
+    pending: by('pending'),
+    running: by('running') + by('preparing'),
+    done: by('done'),
+    warning: by('warning'),
+    failed: by('failed'),
+    canceled: by('canceled'),
+    skipped: by('skipped'),
+    filtered: by('filtered'),
+    // `Progress = Finished() / Total`，和 Go 同一个加法（`Stats.Finished`）。
+    progress: total > 0 ? jobs.filter(terminal).length / total : 0,
+  };
+}
+
 const MOCK_HISTORY_BASE = [
   {
     id: 'r1', input: 'D:/Media/2024/宣传片_最终版.mov', output: 'D:/Media/2024_out/宣传片_最终版.mp4',
-    templateId: 't-4k2k', templateName: '4K 长边转 2K', status: '已完成', note: '', error: '', warnings: [],
+    templateId: 't-4k2k', templateName: '4K 长边转 2K', status: '完成', note: '', error: '', warnings: [],
     startedAt: new Date(Date.now() - 3600e3).toISOString(), endedAt: new Date(Date.now() - 3200e3).toISOString(),
     elapsedMs: 412_000, speed: 3.1,
     before: { exists: true, path: '', size: 2_940_000_000, container: 'mov', duration: 212, videoCodec: 'prores', width: 4096, height: 2304, fps: 25, pixFmt: 'yuv422p10le', audioCodec: 'pcm_s16le', sampleRate: 48000, channels: 2, bitRate: 110_900_000 },
@@ -174,7 +207,7 @@ const MOCK_HISTORY_BASE = [
   },
   {
     id: 'r2', input: 'D:/Media/2024/手机拍摄-慢动作.mp4', output: 'D:/Media/2024_out/手机拍摄-慢动作.mp4',
-    templateId: 't-h265', templateName: 'H.265 高压缩', status: '完成(警告)', note: '已完成（2 条警告）',
+    templateId: 't-h265', templateName: 'H.265 高压缩', status: '完成(警告)', note: '完成（2 条警告）',
     error: '', warnings: ['输出文件复核失败: Invalid data found'], startedAt: new Date(Date.now() - 7200e3).toISOString(),
     endedAt: new Date(Date.now() - 7100e3).toISOString(), elapsedMs: 96_400, speed: 12.4,
     before: { exists: true, path: '', size: 1_240_000_000, container: 'mov', duration: 96, videoCodec: 'h264', width: 3840, height: 2160, fps: 120, pixFmt: 'yuv420p', audioCodec: 'aac', sampleRate: 48000, channels: 2, bitRate: 103_000_000 },
@@ -190,11 +223,21 @@ const MOCK_HISTORY_BASE = [
   },
   {
     id: 'r4', input: 'D:/Media/2024/超短视频.mp4', output: 'D:/Media/small/超短视频.mp4',
-    templateId: 't-h264', templateName: 'H.264 通用 1080p', status: '已排除', note: '体积 18.4 MB 小于下限 300 MB；已移动到 D:/Media/small',
+    templateId: 't-h264', templateName: 'H.264 通用 1080p', status: '跳过', note: '体积 18.4 MB 小于下限 300 MB；已移动到 D:/Media/small',
     sourceMovedTo: 'D:/Media/small/超短视频.mp4',
     error: '', warnings: [], startedAt: new Date(Date.now() - 12000e3).toISOString(), endedAt: new Date(Date.now() - 11990e3).toISOString(),
     elapsedMs: 420, speed: 0,
     before: { exists: true, path: '', size: 19_300_000, container: 'mp4', duration: 12, videoCodec: 'h264', width: 1280, height: 720, fps: 30, pixFmt: 'yuv420p', audioCodec: 'aac', sampleRate: 48000, channels: 2, bitRate: 12_800_000 },
+    after: { exists: false, path: '', size: 0, container: '', duration: 0, videoCodec: '', width: 0, height: 0, fps: 0, pixFmt: '', audioCodec: '', sampleRate: 0, channels: 0, bitRate: 0 },
+  },
+  // 「取消」那一条：它在记录页上和「跳过」是**两个色调**（`chip--info` / `chip--muted`），
+  // 预览里没有样本就验不出来 —— 两条都灰成一片时截图看着「挺一致」，而用户要的正是分开。
+  {
+    id: 'r5', input: 'D:/Media/2024/长片_未完成.mkv', output: '',
+    templateId: 't-h265', templateName: 'H.265 高压缩', status: '取消', note: '用户取消',
+    error: '', warnings: [], startedAt: new Date(Date.now() - 15000e3).toISOString(),
+    endedAt: new Date(Date.now() - 14800e3).toISOString(), elapsedMs: 21_000, speed: 0,
+    before: { exists: true, path: '', size: 4_100_000_000, container: 'mkv', duration: 3600, videoCodec: 'h264', width: 1920, height: 1080, fps: 25, pixFmt: 'yuv420p', audioCodec: 'aac', sampleRate: 48000, channels: 2, bitRate: 9_100_000 },
     after: { exists: false, path: '', size: 0, container: '', duration: 0, videoCodec: '', width: 0, height: 0, fps: 0, pixFmt: '', audioCodec: '', sampleRate: 0, channels: 0, bitRate: 0 },
   },
 ];
@@ -215,7 +258,10 @@ const MOCK_HISTORY = (() => {
     // 从 1.5 小时前起，每条往前推 1.5 小时：最新的那条也留在过去。
     const started = Date.now() - (i + 1) * 5400e3;
     const input = stamped(b.input);
-    const output = stamped(b.output);
+    // 没有输出路径的行（比如被取消的那条）**不能过 `stamped`**：它按最后一个 `/`
+    // 切目录和文件名，空串切出来是 `/`，那会造出一条「输出在盘根下」的假记录 ——
+    // 而且行尾那颗「定位输出」还会因此亮起来。
+    const output = b.output ? stamped(b.output) : '';
     out.push({
       ...b,
       id: `r${i + 1}`,
@@ -512,10 +558,34 @@ function mockScanFolder(scan) {
     // 所以这里列出来的是**被跳过的目录**，totalFiles 是真正会进队列的数量 —— 一个说
     // "少了什么"，一个说"还剩多少"，两个都要有才对得上"整个文件夹减去这些"。
     //
-    // 只看一层时一个子目录都不会被跳过（根本没往里看），收的就是根那一层：和 Go 侧的
-    // 不递归分支直接忽略条件是一样的。
+    // 只看一层时一个**子目录**都不会被跳过（根本没往里看），收的就是根那一层：和
+    // Go 侧的不递归分支直接忽略条件是一样的。根自己那一条是例外，见下面那一判据。
     const pruned = [];
     let examined = 0;
+    // **用户挑的那个文件夹自己的名字也要过一遍条件**：命中了就是"整个文件夹都不要"，
+    // 和 Go 侧 `engine.mediaUnder` 遍历之前那一判据一一对应。少了它，挑一个自己就叫
+    // ffmpeg__* 的目录会得到「排除 0 个目录 · 收 N 个文件」—— 而那和"排除根本没生效"
+    // 长得一模一样，用户只能自己猜是哪一种。
+    //
+    // 这一判据在"往下收多深"之前：只看一层时同样有效。它的落点是 `recursive` 决定的
+    // （递归数整棵，只看一层只数直接放在里面的那些），和 Go 侧同一段 `mediaUnder`。
+    if (!takeName(base(root), dirRules.filters, dirRules.matchAll, true)) {
+      const all = recursive ? allFiles : MOCK_SCAN_ROOT_FILES.slice();
+      return {
+        root: win(root), filtering: true, exclude: true, scanned: 0,
+        dirsTotal: 1,
+        dirs: [{
+          dir: win(root),
+          name: base(root),
+          // 根自己那行的相对路径就是它的名字（`relativeTo(root, root)` 走 "." 那一档）。
+          rel: base(root),
+          // 被跳掉的目录报的是"这里有多少个文件会跟着没" —— 所以**不套**文件规则。
+          files: all.length,
+        }],
+        totalFiles: 0,
+        filteredFiles: 0,
+      };
+    }
     if (recursive) {
       for (const d of candidates) {
         if (pruned.some((p) => d.rel.startsWith(`${p}/`))) continue;
@@ -804,7 +874,7 @@ const mock = {
       },
       settings: MOCK_SETTINGS, filter: mockFilterState(),
       templates: MOCK_TEMPLATES, jobs: MOCK_STATE.jobs,
-      stats: MOCK_STATE.stats, history: MOCK_HISTORY.slice(0, 50), options: OPTIONS,
+      stats: mockQueueStats(), history: MOCK_HISTORY.slice(0, 50), options: OPTIONS,
     };
   },
   Settings: () => MOCK_SETTINGS,
@@ -960,19 +1030,65 @@ const mock = {
   AddPaths: () => mockEnqueueFiles(MOCK_DROPPED_FILES),
   AddDroppedFiles: () => mockEnqueueFiles(MOCK_DROPPED_FILES),
   Jobs: () => MOCK_STATE.jobs,
-  Stats: () => MOCK_STATE.stats,
-  StartQueue: () => {}, PauseQueue: () => {}, ResumeQueue: () => {},
-  TogglePause: () => false, StopQueue: () => {},
-  RemoveJob: (id) => { MOCK_STATE.jobs = MOCK_STATE.jobs.filter((j) => j.id !== id); },
+  // 这两个必须广播 `queue:state`，和 Go 里那三行 `r.emitState()` 一一对应
+  // （`Runner.RemoveJob` 无条件发，`RemoveJobs` 只在真删掉东西时发）。
+  //
+  // 漏掉它看不出来，而且症状很具体：前端 `removeOne()` 自己会重拉 `Jobs()`，所以
+  // **行**照样消失；但工具栏那几颗计数 chip 是 `onStats()` 画的，只有广播才叫得动它
+  // —— 于是「移除 3 行之后进度还写着 9」。数出来的东西和数它的那一列打架，比两个都
+  // 停在旧值更像"这程序算错了"。
+  //
+  // 前端自己重拉一次不是替代品：真实程序里移除只广播 stats（不广播 `job:update`），
+  // 那条重拉是给**行**用的，两份数据各有各的出口。
+  RemoveJob: (id) => {
+    MOCK_STATE.jobs = MOCK_STATE.jobs.filter((j) => j.id !== id);
+    emitMock('queue:state', mockQueueStats());
+  },
   RemoveJobs: (ids) => {
     // One shot for the whole batch, matching the Go side: the list has to shrink once,
     // not once per clicked row.
     const want = new Set(ids || []);
     const before = MOCK_STATE.jobs.length;
     MOCK_STATE.jobs = MOCK_STATE.jobs.filter((j) => !want.has(j.id));
-    return before - MOCK_STATE.jobs.length;
+    const removed = before - MOCK_STATE.jobs.length;
+    if (removed > 0) emitMock('queue:state', mockQueueStats());
+    return removed;
   },
-  RemoveFinished: () => 0, ClearQueue: () => 0, RetryFailed: () => 0,
+  RemoveFinished: () => 0,
+  // 照 `Runner.ClearAll`：整张列表一起清掉，**不动任何文件**，返回清掉的行数。
+  //
+  // 桩成 `() => 0` 的话，"清空"在预览里就是一颗按下去什么都不动的按钮 —— 而真程序里
+  // 它会清掉整个列表。**行**其实是前端自己重拉 `Jobs()` 画出来的，所以桩着也看不出
+  // 差别；看得出来的是工具栏那几颗计数 chip（`onStats()` 画的），它们只有广播才叫得动
+  // —— 少了这一句，清空之后行没了、进度还写着 9。
+  //
+  // 无条件广播（不判 `n > 0`），照 Go 那边 `ClearAll` 里那句无条件的 `r.emitState()`。
+  ClearQueue: () => {
+    const n = MOCK_STATE.jobs.length;
+    MOCK_STATE.jobs = [];
+    emitMock('queue:state', mockQueueStats());
+    return n;
+  },
+  // 照 `Runner.ResetFailed`：失败 / 取消 / 跳过的回「排队中」，并且**顺带取消暂停**
+  // （Go 里是 `if n > 0 { r.paused = false }` —— "重试"的意思就是"我要接着跑"）。两件事
+  // 在界面上都看得出来，所以步子得跟 Go 一样齐。桩成 `() => 0` 的话，预览里点「重试失败」
+  // 什么都不发生，而它旁边那些**行**也不会重绘（前端 `if (n > 0) refreshJobs()`）。
+  RetryFailed: () => {
+    let n = 0;
+    MOCK_STATE.jobs.forEach((j) => {
+      if (j.status === 'failed' || j.status === 'canceled' || j.status === 'skipped') {
+        j.status = 'pending';
+        j.progress = 0;
+        j.message = '排队中';
+        j.error = '';
+        j.warnings = [];
+        n++;
+      }
+    });
+    if (n > 0) MOCK_STATE.stats.paused = false;
+    emitMock('queue:state', mockQueueStats());
+    return n;
+  },
   // Mirrors the real SetAllTemplates: every row that is not on the CPU takes the
   // new template, and the finished ones go back to 排队中 so the counters the
   // toast shows are not made up.
@@ -994,7 +1110,7 @@ const mock = {
         requeued++;
       }
     });
-    emitMock('queue:state', MOCK_STATE.stats);
+    emitMock('queue:state', mockQueueStats());
     return { applied, requeued };
   },
   JobLogs: (id) => MOCK_STATE.log.filter(([j]) => j === id).map(([, l]) => l),
@@ -1153,15 +1269,28 @@ const mock = {
       notices,
     };
   },
-  /* 和 Go 侧的 History 同一套语义：关键字、状态、日期区间过滤，再排序、切片。
-     日期两端都含当天 —— 结束日期取的是那一天的最后一毫秒。 */
+  /* 和 Go 侧的 `History` 同一套语义：关键字、状态、时间区间过滤，再排序、切片。
+     区间两端由 `bound` 收成边界，规则和 Go 侧的 `parseBound` **逐字对齐**：填到哪一格就
+     包含那一整格 —— 只填日期 = 那一整天，「到」那一端取所填精度的下一格起点。 */
   History: (q) => {
     const query = q || {};
     const kw = String(query.keyword || '').toLowerCase();
+    // 三档写法和三档"这一格有多长"，顺序从粗到细（`Date.parse` 套不住更长的那个）。
+    const GRAIN = [
+      [/^\d{4}-\d{2}-\d{2}$/, 86400000],
+      [/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 60000],
+      [/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, 1000],
+    ];
     const bound = (s, end) => {
-      const t = Date.parse(`${s}T00:00:00`);
-      if (Number.isNaN(t)) return null; // 填不成日期就当没有这个边界
-      return end ? t + 86399999 : t;
+      const raw = String(s || '').trim();
+      if (!raw) return null;
+      const hit = GRAIN.find(([re]) => re.test(raw));
+      if (!hit) return null; // 填不成时间就当没有这个边界
+      // `new Date('2026-05-02T15:04')` 在 JS 里按**本地时区**解析（没有 `Z` 的日期时间串），
+      // 正好和 Go 侧 `ParseInLocation(..., time.Local)` 是同一件事。
+      const t = new Date(raw).getTime();
+      if (Number.isNaN(t)) return null;
+      return end ? t + hit[1] : t;
     };
     const from = query.from ? bound(query.from, false) : null;
     const to = query.to ? bound(query.to, true) : null;
@@ -1170,7 +1299,9 @@ const mock = {
       if (query.status && query.status !== 'all' && r.status !== query.status) return false;
       const t = when(r);
       if (from !== null && t < from) return false;
-      if (to !== null && t > to) return false;
+      // `to` 是**不含**的上界（"所填那一格的下一格起点"），所以这里必须是 `>=`：
+      // 写成 `> to` 就多含了整整一格，而 Go 侧那句是 `!t.Before(to)`。
+      if (to !== null && t >= to) return false;
       const hay = `${r.input} ${r.output} ${r.templateName} ${r.error} ${r.note}`.toLowerCase();
       return !kw || hay.includes(kw);
     }).sort((a, b) => (query.sort === 'oldest' ? when(a) - when(b) : when(b) - when(a)));
@@ -1205,35 +1336,55 @@ const mock = {
   // Queue control. These were missing entirely, so every 暂停 / 继续 / 停止 click in
   // a mock-driven preview threw and the button looked broken -- which is exactly the
   // bug report that sent me looking at the real implementation first.
-  Stats: () => ({ ...MOCK_STATE.stats }),
+  Stats: () => mockQueueStats(),
   StartQueue: () => {
     MOCK_STATE.stats.started = true;
     MOCK_STATE.stats.paused = false;
-    emitMock('queue:state', { ...MOCK_STATE.stats });
+    emitMock('queue:state', mockQueueStats());
   },
   PauseQueue: () => {
     MOCK_STATE.stats.paused = true;
-    emitMock('queue:state', { ...MOCK_STATE.stats });
+    emitMock('queue:state', mockQueueStats());
   },
   ResumeQueue: () => {
     MOCK_STATE.stats.paused = false;
-    emitMock('queue:state', { ...MOCK_STATE.stats });
+    emitMock('queue:state', mockQueueStats());
   },
   TogglePause: () => {
     MOCK_STATE.stats.paused = !MOCK_STATE.stats.paused;
-    emitMock('queue:state', { ...MOCK_STATE.stats });
+    emitMock('queue:state', mockQueueStats());
     return MOCK_STATE.stats.paused;
   },
   StopQueue: () => {
     MOCK_STATE.stats.started = false;
     MOCK_STATE.stats.paused = false;
-    emitMock('queue:state', { ...MOCK_STATE.stats });
+    // 照 `Runner.CancelAll` 把排队中的全丢成「取消」（正在跑的靠 cancel 收尾，浏览器里
+    // 没有那个进程，一并按终态收）。
+    //
+    // 漏了这一步的偏差不是"少一点真实感"，而是两种能看见的错：那些行在预览里还写着
+    // 「排队中」，真程序里已经是「取消」；右上角那颗「开始」在预览里还能按，真程序里
+    // 是灰的（`pending === 0`）—— 预览比真实现好看，正是最坏的一类镜子偏差。
+    MOCK_STATE.jobs.forEach((j) => {
+      if (j.status === 'pending' || j.status === 'running' || j.status === 'preparing') {
+        j.status = 'canceled';
+        j.progress = 0;
+        j.message = '取消';
+        j.error = '';
+      }
+    });
+    emitMock('queue:state', mockQueueStats());
   },
   // RemoveJob / RemoveJobs / RemoveFinished / ClearQueue / RetryFailed are defined
   // further up in this same literal. They must not be repeated here: a duplicate key
   // silently wins, and these five used to reappear as `() => 0` no-ops -- so every
   // 移除 in a browser preview did nothing at all, and the row that stayed put looked
   // like a rendering bug rather than a mock one.
+  //
+  // 队列开关（`Stats` / `StartQueue` / `PauseQueue` / `ResumeQueue` / `TogglePause` /
+  // `StopQueue`）**反过来**：它们在这里，上面那份是残留的空桩（`StartQueue: () => {}`
+  // 之类），连同那句 `Stats: () => MOCK_STATE.stats` 一起删掉了。同一个字面量里重复的键
+  // 是最后一份赢，所以上面那六行从来没执行过 —— 但只要有人把那六行往下挪一格，"开始"
+  // 就会变成一个点了没反应的按钮，而源码里看着一切正常。
   //
   // The browser preview has no disk to delete from, so 删除 only marks the rows. That
   // is enough to exercise the paths that matter for the UI -- the confirm dialog, the

@@ -217,7 +217,7 @@ func TestRunnerShutdownKillsFrozenProcess(t *testing.T) {
 }
 
 // When the thaw cannot actually happen -- the process was killed from the task
-// manager while frozen -- the row must keep saying 「已暂停」 rather than going back
+// manager while frozen -- the row must keep saying 「暂停」 rather than going back
 // to 「处理中」. Otherwise the user sees a running job with a bar that will never
 // move again, and 继续 looks like it did nothing.
 //
@@ -242,7 +242,7 @@ func TestRunnerFailedThawKeepsTheFrozenBadge(t *testing.T) {
 	if !snap.Frozen {
 		t.Error("继续 cleared the badge even though the process could not be resumed")
 	}
-	if snap.Message != "已暂停（恢复失败）" {
+	if snap.Message != "暂停（恢复失败）" {
 		t.Errorf("message = %q, want the failure to be stated", snap.Message)
 	}
 }

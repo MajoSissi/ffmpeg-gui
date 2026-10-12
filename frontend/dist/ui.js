@@ -128,16 +128,29 @@ export function ratioClass(before, after) {
 
 /* ------------------------------------------------------------------- status */
 
+// 两个状态共用一份：`filtered` 是被模板的「匹配条件」跳过，`skipped` 是本次运行已经
+// 处理过。它们对用户是同一件事 —— 这个文件没编码，而且是故意的 —— 区别写在行副标题的
+// `message` 里（"体积 18.4 MB 小于下限 300 MB" 还是 "本次运行已用该模板处理过"）。
+// 在状态那一格再分一次，只会让状态筛选多出一行同义项，用户还得猜该选哪个。
+//
+// **状态名一律不带「已」**：`排队中 / 分析中 / 处理中 / 完成 / 完成(警告) / 失败 /
+// 取消 / 跳过`。这张表和 `engine.Status.Label()` 是同一个词汇表（托盘、CSV 走那边，
+// 队列行和记录行走这边），**一处改了另一处必须跟着改**。
+//
+// `canceled` 和 `skipped` 共用一个 `chip--muted` 是**故意的区分**吗？不是，那是历史遗留，
+// 两张表分开写了；2026-10-12 起 `canceled` 用 `chip--info`（见那一行）。
+const SKIPPED_META = { label: '跳过', chip: 'chip--muted', bar: '' };
+
 const STATUS_META = {
   pending: { label: '排队中', chip: 'chip--muted', bar: '' },
   preparing: { label: '分析中', chip: 'chip--accent', bar: '' },
   running: { label: '处理中', chip: 'chip--accent', bar: '' },
-  done: { label: '已完成', chip: 'chip--ok', bar: 'is-done' },
+  done: { label: '完成', chip: 'chip--ok', bar: 'is-done' },
   warning: { label: '完成(警告)', chip: 'chip--warn', bar: 'is-warn' },
   failed: { label: '失败', chip: 'chip--err', bar: 'is-err' },
-  canceled: { label: '已取消', chip: 'chip--muted', bar: '' },
-  skipped: { label: '已跳过', chip: 'chip--muted', bar: '' },
-  filtered: { label: '已排除', chip: 'chip--muted', bar: '' },
+  canceled: { label: '取消', chip: 'chip--info', bar: '' },
+  skipped: SKIPPED_META,
+  filtered: SKIPPED_META,
 };
 
 export function statusMeta(s) {
@@ -154,14 +167,14 @@ export function statusMeta(s) {
  * STATUS_META -- there is no `paused` status to key off.
  */
 export function statusChip(s, frozen) {
-  if (frozen) return `<span class="chip chip--warn">已暂停</span>`;
+  if (frozen) return `<span class="chip chip--warn">暂停</span>`;
   const m = statusMeta(s);
   return `<span class="chip ${m.chip}">${esc(m.label)}</span>`;
 }
 
 /** The label a status column should read, honouring the frozen flag. */
 export function statusLabel(s, frozen) {
-  return frozen ? '已暂停' : statusMeta(s).label;
+  return frozen ? '暂停' : statusMeta(s).label;
 }
 
 /* -------------------------------------------------------------------- toast */

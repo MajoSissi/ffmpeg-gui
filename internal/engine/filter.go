@@ -47,7 +47,7 @@ func EvaluateFilters(info *media.Info, f store.FilterSpec) (bool, string) {
 		return false, fmt.Sprintf("扩展名 .%s 不在允许列表内", ext)
 	}
 	if len(f.ExcludeExts) > 0 && containsStr(f.ExcludeExts, ext) {
-		return false, fmt.Sprintf("扩展名 .%s 在排除列表内", ext)
+		return false, fmt.Sprintf("扩展名 .%s 在跳过列表内", ext)
 	}
 	return true, ""
 }

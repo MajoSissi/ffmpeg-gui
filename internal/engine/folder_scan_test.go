@@ -108,13 +108,83 @@ func TestExpandFolderMatchesTheChosenFolderItself(t *testing.T) {
 		t.Fatalf("根不命中时 dirs = %v, want [sub]", got)
 	}
 
-	// **排除方向不把根算进去**：那里的落点就是整个文件夹，命中的是它的子树。挑一个
-	// 自己就叫 123 的目录、条件又写着 1，要是根也参与命中，整个文件夹会被"排除"成
-	// 空的 —— 而用户是奔着它来的。
+	// 排除方向下根**也参与命中**，但落点不变：挑一个自己就叫 123 的目录、条件又写着 1，
+	// 结果是"整个文件夹都不要"。见 TestScanFolderExcludePrunesTheChosenFolderItself。
 	pv, _ = ScanFolder(FolderScan{Dir: root, Recursive: true, Dirs: store.NameRules{Enabled: true, Filters: one, Exclude: true}})
-	if pv.TotalFiles != 3 || pv.DirsTotal != 0 {
-		t.Errorf("排除方向 totalFiles = %d（want 3）、dirsTotal = %d（want 0）：根不参与命中",
+	if pv.TotalFiles != 0 || pv.DirsTotal != 1 {
+		t.Errorf("排除方向 totalFiles = %d（want 0）、dirsTotal = %d（want 1）：根的名字命中就该整棵都不要",
 			pv.TotalFiles, pv.DirsTotal)
+	}
+}
+
+// 排除方向下，用户挑的那个文件夹**自己的名字**也要过一遍条件。
+//
+// 用户报上来的原话：条件「包含 FFMPEG + 排除」，在「试一个文件夹」里挑
+// `E:\BiliBili\!其他\FFMPEG__1__H265_Slow_21_2560`（那个目录里正好 48 个文件），
+// 面板上却是「排除 0 个目录 · 收 48 个文件」—— 按条件读，那个文件夹显然是"整个都不要"，
+// 而这个结果和"排除根本没生效"长得一模一样，用户只能自己猜。
+//
+// 收的方向早就把根算成候选人了（TestExpandFolderMatchesTheChosenFolderItself），
+// 排除这一半漏掉它，只是因为漏了。
+func TestScanFolderExcludePrunesTheChosenFolderItself(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "FFMPEG__1__H265")
+	mk := func(rel string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a.mp4")
+	mk("b.mp4")
+	mk("sub/c.mkv")
+
+	excl := store.NameRules{Enabled: true, Exclude: true, Filters: []store.NameFilter{{Mode: store.FilterContains, Value: "FFMPEG"}}}
+
+	// 挑中的就是那个命中的文件夹：一个文件都不收，而且要说清"跳过的是哪一个"——
+	// 列表里那一行就是它自己（相对所选目录的路径走 "." 那一档，退回目录名）。
+	pv, errs := ScanFolder(FolderScan{Dir: root, Recursive: true, Dirs: excl})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if !pv.Exclude || !pv.Filtering {
+		t.Fatalf("filtering=%v exclude=%v, want true/true", pv.Filtering, pv.Exclude)
+	}
+	if pv.TotalFiles != 0 {
+		t.Errorf("totalFiles = %d, want 0（整个文件夹都不要）", pv.TotalFiles)
+	}
+	if pv.DirsTotal != 1 || len(pv.Dirs) != 1 {
+		t.Fatalf("被跳过的目录 %d 个（%+v），want 1（它自己）", pv.DirsTotal, pv.Dirs)
+	}
+	if got := pv.Dirs[0]; got.Dir != root || got.Rel != "FFMPEG__1__H265" || got.Files != 3 {
+		t.Errorf("那一行 = %+v, want dir=%q rel=FFMPEG__1__H265 files=3", got, root)
+	}
+
+	// 只看这一层时同样如此：这个判据在遍历之前，不跟着"往下收多深"变。
+	pv, _ = ScanFolder(FolderScan{Dir: root, Recursive: false, Dirs: excl})
+	if pv.TotalFiles != 0 || pv.DirsTotal != 1 {
+		t.Errorf("只看一层 totalFiles = %d dirsTotal = %d, want 0/1", pv.TotalFiles, pv.DirsTotal)
+	}
+
+	// 挑的文件夹名字**不**命中时，行为一个字都不变：整个文件夹照收，命中的子目录才跳。
+	pv, _ = ScanFolder(FolderScan{Dir: parent, Recursive: true, Dirs: store.NameRules{Enabled: true, Exclude: true, Filters: []store.NameFilter{{Mode: store.FilterContains, Value: "FFMPEG"}}}})
+	if pv.TotalFiles != 0 || pv.DirsTotal != 1 {
+		t.Errorf("挑上一级 totalFiles = %d dirsTotal = %d, want 0/1（跳掉的子目录就是它）",
+			pv.TotalFiles, pv.DirsTotal)
+	}
+
+	// 真加进来那个入口也一样：一句"全被排除"要说出来，别让文件夹看起来"加进去了"却是空的。
+	r := newDeleteRunner()
+	n, errs := r.AddInputs([]InputItem{{Path: root, IsDir: true, Recursive: true, Dirs: excl}}, "t1", "模板")
+	if n != 0 {
+		t.Fatalf("加入 %d 个任务，want 0", n)
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0], "全部文件都被过滤条件排除了") {
+		t.Errorf("errs = %v, want 一条说明全被排除的", errs)
 	}
 }
 

@@ -246,7 +246,7 @@ function paintChips() {
   const running = (s.running || 0) > 0;
   host.innerHTML = `
     ${running ? `<span class="chip chip--accent">${icon('speed')}${s.running} 个任务处理中</span>` : ''}
-    ${s.paused ? `<span class="chip chip--warn">${icon('pause')}队列已暂停</span>` : ''}
+    ${s.paused ? `<span class="chip chip--warn">${icon('pause')}队列暂停</span>` : ''}
     ${state.settings.preventSleep && running ? `<span class="chip chip--ok">${icon('power')}已阻止休眠</span>` : ''}
     <span class="chip ${ok ? 'chip--muted' : 'chip--err'} chip--click" data-role="binchip" title="${esc(rt.ffmpeg?.path || '')}">
       ${icon(ok ? 'check' : 'warning')}${ok ? 'ffmpeg 就绪' : '未找到 ffmpeg'}

@@ -632,7 +632,7 @@ func TestResolveOutputKeepsOccupiedPath(t *testing.T) {
 
 // The section end to end, on real files: a first pass over a folder must encode
 // the file AND file its source away, and the same run of the app must then
-// report the file as 已跳过 instead of encoding it a second time.
+// report the file as 跳过 instead of encoding it a second time.
 //
 // The move is the half that never used to run at all -- it was reachable only
 // from the skip path, and a skip needs a record a first pass cannot have -- so

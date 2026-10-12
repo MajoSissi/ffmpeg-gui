@@ -35,9 +35,12 @@ type Controller struct {
 	started bool
 	stopped bool
 	stopCh  chan struct{}
-	// shown is the tooltip currently on the icon. Every queue event tries to
-	// update the hover text, and each update is a synchronous Shell_NotifyIcon
-	// round trip to explorer, so identical text is dropped here instead.
+	// shown is the tooltip we last handed to the platform. Every queue event
+	// tries to update the hover text, and each update ends in a synchronous
+	// Shell_NotifyIcon round trip to explorer, so identical text is dropped
+	// here instead. The write itself is the platform's business: on Windows it
+	// has to happen on the tray's own thread, see applyTooltip in
+	// tray_windows.go.
 	shown string
 }
 
@@ -87,6 +90,10 @@ func (c *Controller) Stop() {
 
 // SetTooltip updates the hover text (used to show queue progress). An empty
 // string means "nothing to report" and restores the idle title.
+//
+// Called from every queue event, so from whatever goroutine produced it. The
+// text only reaches the icon through applyTooltip, which each platform
+// implements as it needs to.
 func (c *Controller) SetTooltip(text string) {
 	if text == "" {
 		text = c.tooltip
@@ -98,7 +105,16 @@ func (c *Controller) SetTooltip(text string) {
 	if same {
 		return
 	}
-	systray.SetTooltip(text)
+	c.applyTooltip(text)
+}
+
+// isStopped reports whether Stop has torn the tray down. SetTooltip can still
+// be called afterwards: the queue keeps running while 设置 → 托盘 is switched
+// off, and a write against a torn-down systray is at best a dropped error.
+func (c *Controller) isStopped() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopped
 }
 
 func (c *Controller) onReady() {

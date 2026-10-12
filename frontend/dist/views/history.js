@@ -5,7 +5,13 @@ import {
   pagerHtml, bindPager, locateAction, locateSourceHint,
 } from '../ui.js';
 
-const STATUS_ORDER = ['全部', '已完成', '完成(警告)', '失败', '已取消', '已跳过', '已排除'];
+// 「跳过」只有一项：`filtered`（被模板的匹配条件跳过）和 `skipped`（本次运行已处理过）
+// 在界面上是同一个说法（见 `ui.js` 的 `STATUS_META`），所以筛选也只能有一项 —— 两行
+// 同义项会让用户猜该选哪个，而答案取决于记录内部是哪个 enum，那是他看不见的东西。
+// 老记录里那几种老说法（「已排除」「已跳过」「已完成」「已取消」）在读取时都会归一成
+// 这一组新说法（`app.adoptLegacyRecordStatuses`）。**状态名一律不带「已」**，和任务页
+// 的 `STATUS_META`、后端的 `engine.Status.Label()` 是同一套词。
+const STATUS_ORDER = ['全部', '完成', '完成(警告)', '失败', '取消', '跳过'];
 
 const SORTS = [
   { value: 'newest', label: '最新在前' },
@@ -15,6 +21,14 @@ const SORTS = [
 export function createHistoryView(ctx) {
   const el = document.createElement('section');
   el.className = 'page';
+  // 日期区间是**两个 `datetime-local`**（不是 `date`）：这张表里「完成时间」那一列印的就是
+  // `2026-05-02 15:04:33`，筛选能选到秒，才谈得上"把列表上念得出来的那个时刻填进来"。
+  // `step="1"` 是打开秒那一格的开关 —— 它的默认值是 60 秒，也就是只让填到分钟，而 30 秒的
+  // 那条记录就永远筛不出来。
+  //
+  // 精度本身不用在前端解释：`parseBound`（Go 侧）和 mock 里的 `bound` 是同一套语义，
+  // **填到哪一格，就包含那一整格** —— 填「05-02」是那一整天，填「05-02T15:04」是那一分钟，
+  // 填到秒就是那一秒。所以「整天」在结束端要写 `23:59:59`（title 里写了这一条）。
   el.innerHTML = `
     <div class="toolbar">
       <div class="input-group" style="max-width:280px">
@@ -24,9 +38,11 @@ export function createHistoryView(ctx) {
         ${STATUS_ORDER.map((s) => `<option value="${s === '全部' ? 'all' : s}">${s}</option>`).join('')}
       </select>
       <div class="input-group">
-        <input class="input" type="date" data-role="from" title="起始日期" style="width:148px">
+        <input class="input" type="datetime-local" step="1" data-role="from"
+          title="起始时间（含）· 只填到哪一格就包含那一整格：填「2026-05-02」= 那一整天" style="width:186px">
         <span class="hint">至</span>
-        <input class="input" type="date" data-role="to" title="结束日期" style="width:148px">
+        <input class="input" type="datetime-local" step="1" data-role="to"
+          title="结束时间（含）· 要整天就填到 23:59:59，只填日期会停在当天 00:00" style="width:186px">
         <button class="btn btn--text btn--icon btn--sm" data-act="reset-filter" title="清除筛选条件">${icon('close', 'sm')}</button>
       </div>
       <select class="select" data-role="sort" style="min-width:136px">
@@ -82,7 +98,8 @@ export function createHistoryView(ctx) {
   const toEl = el.querySelector('[data-role=to]');
   const sortEl = el.querySelector('[data-role=sort]');
 
-  // 送给后端的筛选条件。两个日期是空字符串表示这一端不设边界。
+  // 送给后端的筛选条件。两个时间端是空字符串表示这一端不设边界（其余是
+  // `2026-05-02T15:04` 或 `2026-05-02T15:04:33`，秒为 0 时浏览器会把秒那一段省掉）。
   const query = { keyword: '', status: 'all', from: '', to: '', sort: 'newest' };
 
   const local = {
@@ -163,7 +180,7 @@ export function createHistoryView(ctx) {
     emptyEl.querySelector('[data-role=empty-title]').textContent
       = filtered ? '没有符合这些条件的记录' : '还没有处理记录';
     emptyEl.querySelector('[data-role=empty-text]').textContent = filtered
-      ? '记录是有的，只是都不满足当前的搜索、状态或日期区间。清除筛选条件就能看到全部。'
+      ? '记录是有的，只是都不满足当前的搜索、状态或时间区间。清除筛选条件就能看到全部。'
       : '每完成一个文件都会记录处理前 / 处理后的格式、分辨率、大小、压缩比与耗时，可一键导出 CSV。';
   }
 
@@ -218,8 +235,10 @@ export function createHistoryView(ctx) {
 
   function statusChipFor(label) {
     const map = {
-      已完成: 'chip--ok', '完成(警告)': 'chip--warn', 失败: 'chip--err',
-      已取消: 'chip--muted', 已跳过: 'chip--muted', 已排除: 'chip--muted',
+      完成: 'chip--ok', '完成(警告)': 'chip--warn', 失败: 'chip--err',
+      // 「取消」和「跳过」**不是同一个色调**（冷紫 vs 暖灰）：前者是自己按停的，
+      // 后者是被规则挡掉的 —— 两种都灰成一片的话，一眼分不清哪几行是自己动过手的。
+      取消: 'chip--info', 跳过: 'chip--muted',
     };
     return `<span class="chip ${map[label] || 'chip--muted'}">${esc(label)}</span>`;
   }

@@ -19,12 +19,12 @@ type Status string
 const (
 	StatusPending   Status = "pending"   // 排队中
 	StatusPreparing Status = "preparing" // 探测源文件
-	StatusFiltered  Status = "filtered"  // 被过滤规则排除
+	StatusFiltered  Status = "filtered"  // 被模板的匹配条件跳过
 	StatusRunning   Status = "running"   // 转码中
 	StatusDone      Status = "done"      // 完成
 	StatusWarning   Status = "warning"   // 完成但有警告
 	StatusFailed    Status = "failed"    // 失败
-	StatusCanceled  Status = "canceled"  // 已取消
+	StatusCanceled  Status = "canceled"  // 取消
 	StatusSkipped   Status = "skipped"   // 已存在，跳过
 )
 
@@ -38,6 +38,20 @@ func (s Status) Finished() bool {
 }
 
 // Chinese label for the UI / CSV.
+//
+// `filtered` 和 `skipped` **共用一个说法**。它们是两个内部状态（一个是被模板的匹配条件
+// 跳过、一个是本次运行已经处理过），但对用户来说是同一件事：这个文件没编码，而且是
+// 故意的。两者的区别在 `Message` 里说得很清楚（"体积 18.4 MB 小于下限 300 MB" 还是
+// "本次运行已用该模板处理过"），不需要在状态那一格再分一次 —— 分出来的结果是状态筛选
+// 里两行同义项，用户还得去猜自己该选哪个。
+//
+// 状态值本身**不合并**：`Finished()` 之外的判断、搬迁行为、以及一批测试都按状态走，
+// 合并 enum 是另一件事，而这件事没有理由搭这次改词的车。
+//
+// **状态名一律不带「已」**（2026-10-12 统一）：`排队中 / 分析中 / 处理中 / 完成 /
+// 完成(警告) / 失败 / 取消 / 跳过`。原来只有三个终态带「已」，前排那几个不带 —— 同一列里
+// 一半带一半不带，看着像两套词汇。`Filtered` 和 `Skipped` 那两行必须逐字相同（同一个
+// 说法），改词时别只改一行。
 func (s Status) Label() string {
 	switch s {
 	case StatusPending:
@@ -45,19 +59,19 @@ func (s Status) Label() string {
 	case StatusPreparing:
 		return "分析中"
 	case StatusFiltered:
-		return "已排除"
+		return "跳过"
 	case StatusRunning:
 		return "处理中"
 	case StatusDone:
-		return "已完成"
+		return "完成"
 	case StatusWarning:
 		return "完成(警告)"
 	case StatusFailed:
 		return "失败"
 	case StatusCanceled:
-		return "已取消"
+		return "取消"
 	case StatusSkipped:
-		return "已跳过"
+		return "跳过"
 	}
 	return string(s)
 }
@@ -86,7 +100,7 @@ type Job struct {
 	Warnings []string `json:"warnings"`
 
 	// Frozen marks a job whose ffmpeg process is currently suspended. The UI needs
-	// it to say 「已暂停」 rather than 「处理中」 next to a progress bar that has
+	// it to say 「暂停」 rather than 「处理中」 next to a progress bar that has
 	// stopped moving -- from the outside the two look identical, and a bar that
 	// silently stalls reads as a hang, not as a pause the user asked for.
 	Frozen bool `json:"frozen"`

@@ -770,7 +770,7 @@ func (r *Runner) runningJobs() []*Job {
 }
 
 // attachSuspend records the handle that will thaw the frozen process again, and
-// marks the job so the UI can say 「已暂停」.
+// marks the job so the UI can say 「暂停」.
 //
 // It takes the job rather than a pid to look up. Windows recycles pids, so a
 // finished ffmpeg's number can already belong to the next queue item's ffmpeg by
@@ -830,7 +830,7 @@ func (r *Runner) thawJob(j *Job) bool {
 func (r *Runner) markFrozen(j *Job) {
 	j.lock()
 	j.Frozen = true
-	j.Message = "已暂停（恢复失败）"
+	j.Message = "暂停（恢复失败）"
 	j.unlock()
 	r.emitJob(j)
 }
@@ -906,7 +906,7 @@ func (r *Runner) CancelAll() {
 		}
 		if j.Status == StatusPending {
 			j.Status = StatusCanceled
-			j.Message = "已取消"
+			j.Message = "取消"
 		}
 	}
 	r.cond.Broadcast()
@@ -1212,7 +1212,7 @@ func (r *Runner) runJob(job *Job) {
 		if filter.HandlesExcluded() {
 			r.log(job, s, fmt.Sprintf("[filter] %s", job.Message))
 		} else {
-			r.log(job, s, fmt.Sprintf("[filter] 已排除: %s", reason))
+			r.log(job, s, fmt.Sprintf("[filter] 已跳过: %s", reason))
 		}
 		r.emitJob(job)
 		r.record(job, s, StatusFiltered, job.Message)
@@ -1313,7 +1313,7 @@ func (r *Runner) runJob(job *Job) {
 	// 「已处理过的文件」: a verified result is on disk, so this is the moment the
 	// source counts as processed. Both halves happen here, and before the status
 	// is written, so that a source that could not be filed away lands in Warnings
-	// instead of being bolted onto a row that already said 已完成.
+	// instead of being bolted onto a row that already said 完成.
 	//
 	// The record is only kept when the section is on. It is what the section
 	// reads, and a run that never looks at it does not need to fill it in.
@@ -1341,9 +1341,9 @@ func (r *Runner) runJob(job *Job) {
 	}
 	job.Status = status
 	if status == StatusDone {
-		job.Message = "已完成"
+		job.Message = "完成"
 	} else {
-		job.Message = fmt.Sprintf("已完成（%d 条警告）", len(job.Warnings))
+		job.Message = fmt.Sprintf("完成（%d 条警告）", len(job.Warnings))
 	}
 	job.unlock()
 
@@ -1361,7 +1361,7 @@ func (r *Runner) runJob(job *Job) {
 func (r *Runner) finishCanceled(job *Job, s store.Settings, deleteOnFail bool) {
 	job.lock()
 	job.Status = StatusCanceled
-	job.Message = "已取消"
+	job.Message = "取消"
 	job.EndedAt = time.Now()
 	job.ElapsedMS = job.EndedAt.Sub(job.StartedAt).Milliseconds()
 	out := job.Output
@@ -1418,7 +1418,7 @@ func (r *Runner) noteProcessed(input, tplID string) {
 // with neither the old file nor a new one. Saving a template forgets everything
 // that template did: the record is only ever true of the settings it was made
 // with, and re-running a folder after changing the encoder has to encode, not
-// report 已跳过.
+// report 跳过.
 func (r *Runner) dropProcessed(input, tplID string) {
 	if input == "" {
 		return
