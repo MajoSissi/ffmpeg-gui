@@ -36,12 +36,6 @@ func TestResolveDestDirModes(t *testing.T) {
 		{"同级目录", DirSpec{Mode: OutputSibling, Suffix: "_out"}, filepath.Join(`D:\`, "video_out")},
 		{"同级目录 + 保留目录结构", DirSpec{Mode: OutputSibling, Suffix: "_out", KeepTree: true},
 			filepath.Join(`D:\`, "video_out", "mmd", "sub")},
-		// 同级顶层目录量的是**文件自己所在的目录**：D:\video\mmd\sub 的同级是
-		// D:\video\mmd，产物叫 sub_out。保留结构在这里没有意义（锚就是它自己）。
-		{"同级顶层目录", DirSpec{Mode: OutputSiblingTop, Suffix: "_out"},
-			filepath.Join(dirRoot, "mmd", "sub_out")},
-		{"同级顶层目录忽略保留结构", DirSpec{Mode: OutputSiblingTop, Suffix: "_out", KeepTree: true},
-			filepath.Join(dirRoot, "mmd", "sub_out")},
 	}
 	for _, tc := range cases {
 		if got := ResolveDestDir(DestRequest{Spec: tc.spec, SrcPath: src, SrcRoot: dirRoot}); got != tc.want {
@@ -126,48 +120,6 @@ func TestResolveDestDirSiblingAnchorsOnAddedRoot(t *testing.T) {
 	if got, want := ResolveDestDir(DestRequest{
 		Spec: spec, SrcPath: filepath.Join(root, "1", "a.mp4"), SrcRoot: "",
 	}), filepath.Join(root, "prefix_1_suffix"); got != want {
-		t.Errorf("没有添加目录 -> %q, want %q", got, want)
-	}
-}
-
-// 「同级顶层目录」量的是**文件自己所在的目录**，所以同一个添加目录下的每个子目录
-// 各出一个自己的产物目录：添加 D:/V、文件在 D:/V/1，配 prefix_ / _suffix 落在
-// D:/V/prefix_1_suffix —— 用户第 40 批的原话是"也就是只看文件具体所在的目录"。
-//
-// 与上面那档的区别只有锚，但差别是实质的：一棵子目录不一的树会得到 N 个产物目录
-// 而不是 1 个。
-func TestResolveDestDirSiblingTopPerSubFolder(t *testing.T) {
-	root := `D:\V`
-	spec := DirSpec{Mode: OutputSiblingTop, Prefix: "prefix_", Suffix: "_suffix"}
-	for _, tc := range []struct{ sub, want string }{
-		{"1", `D:\V\prefix_1_suffix`},
-		{"2", `D:\V\prefix_2_suffix`},
-		{"x\\y", `D:\V\x\prefix_y_suffix`},
-		// 文件直接挂在添加的目录下时，它就是"顶层"，落点回到添加目录的同级。
-		{"", `D:\prefix_V_suffix`},
-	} {
-		src := filepath.Join(root, tc.sub, "a.mp4")
-		if got := ResolveDestDir(DestRequest{Spec: spec, SrcPath: src, SrcRoot: root}); got != tc.want {
-			t.Errorf("文件在 %s -> %q, want %q", src, got, tc.want)
-		}
-	}
-	// 「保留目录结构」在这里加不出任何东西：锚就是文件自己的目录，相对自己是空路径。
-	// 开着它和关着它必须落在同一个地方 —— 灰掉那个开关的依据。
-	kept := spec
-	kept.KeepTree = true
-	for _, sub := range []string{"1", "2", "x\\y", ""} {
-		src := filepath.Join(root, sub, "a.mp4")
-		with := ResolveDestDir(DestRequest{Spec: spec, SrcPath: src, SrcRoot: root})
-		wo := ResolveDestDir(DestRequest{Spec: kept, SrcPath: src, SrcRoot: root})
-		if with != wo {
-			t.Errorf("文件在 %s: 保留结构把落点从 %q 变成了 %q，这里它不该有作用", sub, with, wo)
-		}
-	}
-	// 这一档不需要「添加目录」也能工作：锚是文件自己算出来的，没有添加目录时
-	// 「同级目录」和它落在同一个地方。
-	if got, want := ResolveDestDir(DestRequest{
-		Spec: spec, SrcPath: filepath.Join(root, "1", "a.mp4"), SrcRoot: "",
-	}), `D:\V\prefix_1_suffix`; got != want {
 		t.Errorf("没有添加目录 -> %q, want %q", got, want)
 	}
 }

@@ -401,13 +401,9 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
         renderForm();
       });
     });
-    // 变量表里的每一颗按钮点一下就复制它自己。这里**不**往输入框里插：光标在哪、
-    // 要不要覆盖选中的一段，只有用户知道；复制给他，他自己决定贴哪里。
-    formEl.querySelectorAll('[data-act=copy-var]').forEach((b) => b.addEventListener('click', async () => {
-      const token = b.dataset.var || '';
-      const ok = await copyText(token);
-      toast(ok ? `已复制 ${token}` : `复制失败：${token}`, ok ? 'success' : 'error', 1600);
-    }));
+    // 变量 chip 的点击（复制 token）不在这里接：它们现在住在标题旁的说明浮层里，
+    // 而浮层是挂在 body 上的（`.editor__body` 会裁掉挂在字段里的浮层），`formEl`
+    // 够不着 —— 统一由 ui.js 的 bindInfoTips 委托，那一份也管着点完的提示。
     formEl.querySelectorAll('[data-act=pick-dir]').forEach((b) => b.addEventListener('click', async () => {
       const input = formEl.querySelector(`[name="${b.dataset.target}"]`);
       if (!input) return;
@@ -632,41 +628,32 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     // 谁都不去动它。
     //
     // 「保留目录结构」在自定义目录和「同级目录」下都有意义：这两种方式的落点在源
-    // 目录**上方**，文件所在的那几层要靠它接回去。「同级顶层目录」的锚就是文件自己
-    // （相对自己是空路径），「原目录」的落点也是源目录本身 —— 两者都靠
-    // dirSpecHasRoom 判掉，不必在这里各写一遍。
-    //
-    // 两个同级的前缀 / 后缀字段是一样的（只有锚不同），所以下面每个 sibling 都
-    // 跟着配一份 siblingTop，漏一个就是那一段的两个框在该方式下灰着。
+    // 目录**上方**，文件所在的那几层要靠它接回去；「原目录」的落点就是源目录本身
+    //（相对自己是空路径）—— 那一种由 dirSpecHasRoom 判掉，不必在这里再写一遍。
     outMode: {
       same: [],
       custom: ['outDir', 'outKeepTree'],
       sibling: ['outPrefix', 'outSuffix', 'outKeepTree'],
-      siblingTop: ['outPrefix', 'outSuffix'],
     },
     exMode: {
       same: [],
       custom: ['exDir', 'exKeepTree'],
       sibling: ['exPrefix', 'exSuffix', 'exKeepTree'],
-      siblingTop: ['exPrefix', 'exSuffix'],
     },
     fMode: {
       same: [],
       custom: ['fDir', 'fKeepTree'],
       sibling: ['fPrefix', 'fSuffix', 'fKeepTree'],
-      siblingTop: ['fPrefix', 'fSuffix'],
     },
     prErrorMode: {
       same: [],
       custom: ['prErrorDir', 'prErrorKeepTree'],
       sibling: ['prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree'],
-      siblingTop: ['prErrorPrefix', 'prErrorSuffix'],
     },
     prWarningMode: {
       same: [],
       custom: ['prWarningDir', 'prWarningKeepTree'],
       sibling: ['prWarningPrefix', 'prWarningSuffix', 'prWarningKeepTree'],
-      siblingTop: ['prWarningPrefix', 'prWarningSuffix'],
     },
   };
 
@@ -705,14 +692,14 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
   /**
    * 这一段的方式能不能长出子树。
    *
-   * 「原目录」和「同级顶层目录」都不能：前者的落点就是源目录本身，后者的锚也是文件
-   * 自己所在的目录（相对自己是空路径）—— 结构要么已经在那里，要么压根没有可以
-   * 往回接的一段。另外两种方式的落点在源目录**上方**，文件所在的那几层要靠这个开关
-   * 接回去；关掉的话整棵树的文件贴平到同一个目录里，重名就得靠 _1、_2 挡。
+   * 「原目录」不能：落点就是源目录本身，相对自己是空路径 —— 结构已经在那里，没有
+   * 一段可以往回接。另两种（自定义目录 / 同级目录）的落点在源目录**上方**，文件所
+   * 在的那几层要靠这个开关接回去；关掉的话整棵树的文件贴平到同一个目录里，重名就
+   * 得靠 _1、_2 挡。
    */
   function dirSpecHasRoom(stem) {
     const box = formEl.querySelector(`[name="${stem}Mode"]`);
-    return !!box && box.value !== 'same' && box.value !== 'siblingTop';
+    return !!box && box.value !== 'same';
   }
 
   function onFieldChange(e) {

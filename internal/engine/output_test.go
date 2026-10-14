@@ -98,41 +98,6 @@ func TestResolveOutputSiblingRule(t *testing.T) {
 	}
 }
 
-// 「同级顶层目录」（第四档）量的是**文件所在的那一层**：每个子目录旁边各出一个，
-// 所以同一棵树会得到 mmd_out / mmd\sub_out / mmd\x\y_out 三个目录，而不是一个。
-// 这两条必须一起钉住：它们只差一个锚，而"看起来差不多"正是上一次把锚改错、
-// 一路改回去还没人发现的原因。
-func TestResolveOutputSiblingTopRule(t *testing.T) {
-	root := `D:\video\mmd`
-	global := globalWith(store.DirSpec{
-		Mode: store.OutputSiblingTop, Suffix: "_out", KeepTree: true,
-	}, "")
-
-	for _, tc := range []struct {
-		name string
-		rel  string
-		want string
-	}{
-		{"根目录下的文件", "a.mp4", filepath.Join(`D:\video`, "mmd_out", "a.mp4")},
-		{"一层子目录", filepath.Join("sub", "b.mp4"), filepath.Join(root, "sub_out", "b.mp4")},
-		{"多层子目录", filepath.Join("x", "y", "c.mp4"), filepath.Join(root, "x", "y_out", "c.mp4")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			src := filepath.Join(root, tc.rel)
-			eff := store.Template{}.Effective(global)
-			got, err := ResolveOutput(OutputRequest{
-				Info: mkInfo(src), Tpl: eff, SrcRoot: root,
-			})
-			if err != nil {
-				t.Fatalf("ResolveOutput: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // The shipped default is a rule like any other, and it has to keep resolving to
 // the folder it now means: 同级目录 measures from the ADDED folder, so every
 // result sits under that one folder -- never inside the tree it came from, which is
@@ -291,10 +256,6 @@ func TestResolveDestDirSharedByEveryStage(t *testing.T) {
 		// mmd_out/sub —— 子目录靠「保留目录结构」接回去，而顶层只有 mmd_out 一个。
 		{"同级目录 + 保留结构", siblingOut(true), filepath.Join(root+"_out", "sub")},
 		{"同级目录不保留结构", siblingOut(false), filepath.Join(root + "_out")},
-		// 同级顶层目录量的是**文件所在的目录**：sub 的同级是 mmd，所以落点
-		// mmd/sub_out —— 一棵子目录不一的树会得到 N 个产物目录。
-		{"同级顶层目录", store.DirSpec{Mode: store.OutputSiblingTop, Suffix: "_out"},
-			filepath.Join(root, "sub_out")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

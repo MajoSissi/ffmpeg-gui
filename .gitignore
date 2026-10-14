@@ -33,4 +33,5 @@ go.work.sum
 # .vscode/
 
 .workbuddy/
+.workbuddy-ai/
 build/bin/

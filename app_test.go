@@ -496,6 +496,31 @@ func TestPreviewPathsResolvesBothDirectories(t *testing.T) {
 	}
 }
 
+// 「输出方式」就是这三档，**顺序也是用户看到的那三档**：原目录 / 自定义目录 / 同级目录。
+//
+// 前端两处镜像它（`api.js` 的 `destModes`、`sections.js` 的 `DEST_TIP` 那张说明卡），
+// 两边各写一份字面量 —— 没有类型能替这件事说话。第 55 批删掉第四档「同级逐层」时，漏掉
+// 任何一处的症状都是"界面上能选到一个真程序不认的值"：选了以后 `Template.Normalize` 把
+// 它当认不出的模式，静默退回「原目录」，产物落进源文件夹里。所以这里断的是**整张表**，
+// 不是"包含某几项"；前端那一份在 `tools/_mock_check.mjs` 的「输出方式：mock 是 Go 那三
+// 档的镜像」和「说明图标：三档的名字按下拉的顺序列」。
+func TestDestModesMirrorTheThreeChoices(t *testing.T) {
+	want := []Option{
+		{store.OutputSame, "原目录"},
+		{store.OutputCustom, "自定义目录"},
+		{store.OutputSibling, "同级目录"},
+	}
+	got := buildOptions().DestModes
+	if len(got) != len(want) {
+		t.Fatalf("DestModes 有 %d 档 %+v，want %d 档", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("DestModes[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // 用户点名要的那条：给目录名加前缀。同级目录 + 前缀 123_ 就是 E:\Bili → E:\123_Bili。
 // 这个面板是唯一能看这条规则真算成什么的地方，所以它得跟着一起对。
 func TestPreviewPathsPrefixesTheSourceFolderName(t *testing.T) {

@@ -1,6 +1,6 @@
 import { api, on, EVENTS, isMock } from './api.js';
 import { icon, brandSvg } from './icons.js';
-import { esc, toast, confirmDialog } from './ui.js';
+import { esc, toast, confirmDialog, bindInfoTips } from './ui.js';
 import { createTasksView } from './views/tasks.js';
 import { createTemplatesView } from './views/templates.js';
 import { createFiltersView } from './views/filters.js';
@@ -170,6 +170,11 @@ window.addEventListener('pointerdown', (e) => {
   if (!ctxMenu.hidden && !e.target.closest('.context-menu')) hideContextMenu();
 }, true);
 window.addEventListener('blur', hideContextMenu);
+
+// 标题旁的说明图标（参数作用、可用变量）。**整页只接一次**，靠事件委托：模板编辑器
+// 每改一个字段就整块重画表单，逐个绑的话要在每次重画之后再绑一遍，而漏绑的症状是
+// "这个图标点了没反应"，和"这一项本来就没有说明"长得一样。
+bindInfoTips();
 
 /* --------------------------------------------------------- window controls */
 

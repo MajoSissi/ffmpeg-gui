@@ -19,8 +19,14 @@ export function selectHtml(name, options, value, extra = '') {
     .join('')}</select>`;
 }
 
-export function field(label, control, hint = '', cls = '') {
-  return `<div class="field ${cls}"><label>${esc(label)}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</div>`;
+/**
+ * A labelled control.
+ *
+ * `tip` 是 `{title, rows, foot}`（见 infoTip），渲染成标题右边那颗说明图标 ——
+ * 它是唯一一个**不是纯文本**的参数，别往里塞 HTML。
+ */
+export function field(label, control, hint = '', cls = '', tip = null) {
+  return `<div class="field ${cls}"><label>${esc(label)}${tip ? infoTip(tip) : ''}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</div>`;
 }
 
 /**
@@ -49,6 +55,121 @@ export function switchInline(title, name, checked, tip = '', attrs = '') {
     <span class="switch"><input type="checkbox"${name ? ` name="${esc(name)}"` : ''}${
       attrs ? ` ${attrs}` : ''}${checked ? ' checked' : ''}></span>
   </label>`;
+}
+
+/* -------------------------------------------------------------- info tips */
+
+/**
+ * 标题旁的一颗说明图标：鼠标移上去（或键盘聚焦）弹一张卡片，把这一项的作用逐条列出来。
+ *
+ * 为什么不用原生 `title`：它只能是一坨连续文字，而这里要列的恰恰是一条一条的东西
+ * （四档各自是什么、这个框能用哪些变量）；系统提示框还跟着鼠标走，三行没读完就飘走了。
+ *
+ * 卡片**不挂在标题旁边**，而是照 `.context-menu` 那套挂在 body 上（`position: fixed`）：
+ * 模板编辑器那半边的滚动容器是 `.editor__body`（`overflow: auto`），绝对定位的浮层
+ * 会被它整块裁掉 —— 而"说明只显示半截"比没有说明更难解释。
+ *
+ * 内容（`.tip__src`）**始终留在 DOM 里**，只是不显示：界面探针要能数到它（"说明漏了
+ * 一条"和"这一项本来就没画出来"在截图上一模一样），变量 chip 也还是它自己那颗按钮。
+ *
+ * @param {{title?: string, rows?: Array<{token?: string, term?: string, text: string}>, foot?: string}} tip
+ */
+export function infoTip(tip = {}) {
+  const { title = '', rows = [], foot = '' } = tip;
+  return `<span class="infotip" data-tip tabindex="0" role="button" aria-label="查看说明">
+    ${icon('info', 'sm')}
+    <span class="tip__src">${title ? `<b class="tip__title">${esc(title)}</b>` : ''}${
+  rows.map(tipRow).join('')}${foot ? `<span class="tip__foot">${esc(foot)}</span>` : ''}</span>
+  </span>`;
+}
+
+/**
+ * 一条说明。`token` 是变量（渲染成可点复制的 chip），`term` 是别的左列文字 ——
+ * 四档方式的说明用它，那样四行能按名字对齐。
+ */
+function tipRow(r) {
+  const term = r.token
+    ? `<button type="button" class="var-chip" data-var="${esc(r.token)}"
+        title="点击复制 ${esc(r.token)}">${esc(r.token)}</button>`
+    : `<b class="tip__term">${esc(r.term || '')}</b>`;
+  return `<span class="tip__row">${term}<span>${esc(r.text)}</span></span>`;
+}
+
+let tipHost = null;
+let tipTimer = 0;
+
+function hideTip() {
+  clearTimeout(tipTimer);
+  if (tipHost) { tipHost.hidden = true; tipHost.innerHTML = ''; }
+}
+
+/**
+ * 收起要慢半拍：鼠标从标题挪到卡片上的那段路既不在标题里、也不在卡片里，
+ * 立刻收起的话用户就点不到卡片里的变量 chip 了。
+ */
+function scheduleTipHide() {
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(hideTip, 160);
+}
+
+function showTip(src) {
+  if (!tipHost) return;
+  const body = src.querySelector('.tip__src');
+  if (!body) return;
+  tipHost.innerHTML = body.innerHTML;
+  tipHost.hidden = false;
+  // 位置取决于卡片自己的高/宽，所以先放出来再量。下头放不下就翻到标题上方。
+  const at = src.getBoundingClientRect();
+  const box = tipHost.getBoundingClientRect();
+  const under = at.bottom + 6;
+  const top = under + box.height > window.innerHeight - 8
+    ? Math.max(8, at.top - box.height - 6) : under;
+  tipHost.style.top = `${top}px`;
+  tipHost.style.left = `${Math.max(8, Math.min(at.left, window.innerWidth - box.width - 8))}px`;
+}
+
+/**
+ * 给整页的说明图标接上行为。**整页接一次**，靠 `mouseover` / `focusin` 委托：
+ * 表单改一个字段就整块重画，逐个绑的话每次重画都得再绑一遍，而漏绑的症状是
+ * "这个图标点了没反应"，和"这一项本来就没有说明"长得一样。
+ *
+ * 变量 chip 的复制也收在这里：它们住在浮层里，而浮层挂在 body 上，模板编辑器那份
+ * `formEl.querySelectorAll` 够不着它。
+ */
+export function bindInfoTips(root = document) {
+  if (!tipHost) {
+    tipHost = document.createElement('div');
+    tipHost.className = 'tip';
+    tipHost.hidden = true;
+    // 指针落在卡片上时要停住收起（见 scheduleTipHide）。
+    tipHost.addEventListener('mouseenter', () => clearTimeout(tipTimer));
+    tipHost.addEventListener('mouseleave', scheduleTipHide);
+    document.body.appendChild(tipHost);
+  }
+  root.addEventListener('mouseover', (e) => {
+    const src = e.target?.closest?.('.infotip');
+    if (src) { clearTimeout(tipTimer); showTip(src); return; }
+    if (e.target?.closest?.('.tip')) { clearTimeout(tipTimer); return; }
+    scheduleTipHide();
+  });
+  root.addEventListener('focusin', (e) => {
+    const src = e.target?.closest?.('.infotip');
+    if (src) { clearTimeout(tipTimer); showTip(src); }
+  });
+  root.addEventListener('focusout', (e) => {
+    if (e.target?.closest?.('.infotip')) scheduleTipHide();
+  });
+  // 页面一滚，卡片和它指的那个标题就不对位了 —— 收起来，比让它飘在错的地方好。
+  window.addEventListener('scroll', hideTip, true);
+  window.addEventListener('blur', hideTip);
+  root.addEventListener('click', (e) => {
+    const chip = e.target?.closest?.('.var-chip[data-var]');
+    if (!chip) return;
+    const token = chip.dataset.var || '';
+    copyText(token).then((ok) => toast(
+      ok ? `已复制 ${token}` : `复制失败：${token}`, ok ? 'success' : 'error', 1600,
+    ));
+  });
 }
 
 /* -------------------------------------------------------------- formatting */

@@ -1144,7 +1144,6 @@ map（`processedThisRun`，键 = `(输入路径小写, 模板 id)`，见 `proces
 同级目录 后缀 _out（添加的是 mmd\）      → D://video_out            ← 全局模板的默认值
 同级目录 前缀 123_ 后缀 _out             → D://123_video_out        ← 用户点名要的加前缀
 同级目录 + 保留目录结构（文件在 mmd\sub\） → D://video_out//mmd//sub
-同级顶层目录 后缀 _out（文件在 mmd\sub\） → D://video//mmd//sub_out
 ```
 
 四条判据，按顺序：
@@ -1155,31 +1154,61 @@ map（`processedThisRun`，键 = `(输入路径小写, 模板 id)`，见 `proces
    `C://video//<某个名字>`。用户原话是"具体路径没用变量就该放哪里放哪里"。
 3. **`KeepTree` 补的是「源文件相对添加目录」的那一段**（`subPath(SrcRoot, srcDir)`），
    所以整个文件夹拖进来会带着原来的形状出去。它只对**自定义目录和「同级目录」**有意义
-   （这两种方式的落点在源目录**上方**，文件所在的那几层得靠它接回去）；
-   「原目录」的落点就是源目录本身，「同级顶层目录」的锚也是文件自己 —— 两者都加不出
-   东西。前端据此灰掉开关（`refreshEnabled` 的 `dirSpecHasRoom`，判据是
-   `mode !== 'same' && mode !== 'siblingTop'`）。
-4. **两个同级只差锚**：`sibling` 锚在**添加的那个目录**（`anchorDir(SrcRoot, srcDir)`），
-   `siblingTop` 锚在 `filepath.Dir(SrcPath)` —— 文件自己所在的那一层。前缀 / 后缀的拼法
-   完全一样（`siblingName`），只有名字取自谁不同。
+   （这两种方式的落点在源目录**上方**，文件所在的那几层得靠它接回去）；「原目录」的落点
+   就是源目录本身，相对自己是空路径，加不出东西。前端据此灰掉开关
+   （`refreshEnabled` 的 `dirSpecHasRoom`，判据现在只剩 `mode !== 'same'`）。
+4. **只剩一个同级**：`sibling` 锚在**添加的那个目录**（`anchorDir(SrcRoot, srcDir)`），
+   前缀 / 后缀拼的是它的名字（`siblingName`）。
 
-   **这一段被改过三轮，每次都是同一个坑**：第 39 批只有 `sibling`（锚在添加目录）；
-   第 40 批把锚换成 `filepath.Dir(SrcPath)` 并**替换掉** `sibling`，用户接着说
-   「我要当前的"同级目录"，也要"同级顶层目录"」—— **是新增第四档，不是换掉那一档**。
-   于是 `siblingTop` 拿回 `filepath.Dir(SrcPath)` 那个锚，`sibling` 保持原样。
+   **这一段被改过四轮，四轮都是同一个坑：锚是谁。** 第 39 批只有 `sibling`（锚在添加
+   目录）；第 40 批把锚换成 `filepath.Dir(SrcPath)` 并**替换掉** `sibling`，用户接着说
+   「我要当前的"同级目录"，也要"同级顶层目录"」—— **是新增第四档，不是换掉那一档**，
+   于是 `siblingTop` 拿回 `filepath.Dir(SrcPath)` 那个锚、`sibling` 保持原样；第 55 批
+   用户说「删除"同级逐层"和冗余代码」，第四档连同 `OutputSiblingTop` 常量一起删掉，只剩
+   `sibling`，界面名也改回「同级目录」（见下面那一节）。
    教训有两条：
    - **同一个需求说了两遍，第二遍往往是纠正"替换"而不是"重做"**。听到"那 X 呢"先问
      是要并存还是替换。
    - **一个例子吻合证明不了语义**。`D:/V/1` → `D:/V/prefix_1_suffix` 在两个锚下都成立，
-     分水岭只在更深的文件。改锚点必须拿一个**不在第一层**的文件去问，并把两种模式
-     各自的期望值**写在同一个测试里并排**（`TestResolveOutputSiblingRule` /
+     分水岭只在更深的文件。改锚点必须拿一个**不在第一层**的文件去问。当年为这件事特意
+     把两种模式各自的期望值**写在同一个测试里并排**（`TestResolveOutputSiblingRule` /
      `TestResolveOutputSiblingTopRule`、`TestResolveDestDirSiblingAnchorsOnAddedRoot` /
-     `TestResolveDestDirSiblingTopPerSubFolder`）—— 只留一个测试时，改错了它照样绿。
+     `TestResolveDestDirSiblingTopPerSubFolder`）—— 第 55 批删掉后一半，留下的是
+     `TestResolveOutputSiblingRule` 与 `TestResolveDestDirSiblingAnchorsOnAddedRoot`，
+     它们仍然把"锚是添加目录"钉在**子目录里的文件**上（`sub`、`x/y`），所以那条纪律
+     没有跟着档位一起消失。**删一档时最容易连"它当年是为了钉住什么"一起删掉**：先看
+     那个测试的留档理由，再决定删的是用例还是整条纪律。
 
    `anchorDir` 在 SrcRoot 为空时（单个拖进来的文件）退回 `srcDir`，不然会算成一条相对
-   路径，落在进程旁边而不是文件旁边。`siblingTop` 不需要这层：锚是文件自己算出来的。
+   路径，落在进程旁边而不是文件旁边。
 
-**同级目录的目录名 = 前缀 + 锚目录的名字 + 后缀**（`siblingName`，两种同级共用）。目录名
+**界面上的名字改过两次，最后回到「同级目录」。** 第 53 批把 `sibling` / `siblingTop`
+叫成「同级汇总」「同级逐层」，当时对付的是旧名「同级目录」「同级顶层目录」的两个毛病：
+两个名字共用「同级」，而那是它俩的**共同点**（产物落在树外面，不在树里面），真正的区别
+一个字都没说；更要命的是**「顶层」指向反了** —— 它听上去像"只在最上面那一层建一个"，
+而那恰好是 `sibling` 干的事。第 55 批删掉 `siblingTop` 之后，那套"一个 / 多个"的对比
+没有了对象（「汇总」是相对「逐层」才说得通的词），于是 `sibling` 改回「同级目录」——
+只剩一档时，"同级"自己就把话说完了。
+
+**改名只动 label，删档动的是 `mode` 值**：`OutputSiblingTop` 常量、`ResolveDestDir` 里
+那个 case、`Normalize` 白名单里那一项一起删。老文件里存着的 `siblingTop` 会被 `Normalize`
+当成认不出的模式、退回「原目录」—— 用户明确说不用为老数据写迁移（这份数据里也没人有
+那个值），所以**不要**给它加翻译分支：解析层只认三档，多一条"老朋友"就多一条要走的路。
+
+`DestModes`（`app.go` 的 `buildOptions`）仍是唯一的定义处，但**镜像从两处变成三处**，
+改名字或改档位要一起动：
+- `api.js` 的 `destModes`（那两行上面写着 mirror verbatim）—— 少了它，预览里能选到一个
+  真程序不认的值；
+- `sections.js` 的 `destLabel`（摘要那一句）与 `DEST_TIP`（说明卡那三行）—— 前者是用户
+  判断"这一档写到哪"的唯一依据，后者是它在"输出方式"旁边那颗圆圈里的样子；
+- `templates.js` 的 `ENABLED_BY`（哪几个框亮着）与 `dirSpecHasRoom`（保留目录结构灰不灰）
+  —— **保留目录结构在同级目录下必须一直有效**，删档时那张表只该去掉被删那一档的行。
+
+两侧各钉一条**字面量**断言（这类"两处必须一致"没有类型能替它说话）：Go 侧 `app_test.go`
+的 `TestDestModesMirrorTheThreeChoices`，镜像侧 `tools/_mock_check.mjs` 的「输出方式：
+mock 是 Go 那三档的镜像」与「说明图标：三档的名字按下拉的顺序列」。
+
+**同级目录的目录名 = 前缀 + 锚目录的名字 + 后缀**（`siblingName`）。目录名
 被钉在路径的末尾，所以「给这个文件夹加前缀」这件事在只有后缀的时候根本没有出口 ——
 用户原话是"我真是想要的是：我想用 `{rootDir}` 这个变量的同时加前缀怎么办"，第 38 批用
 `{dirPath:-1}\123_{dirName}` 绕了出来，第 39 批直接把它变成两个输入框：**目录名是可以
@@ -1365,6 +1394,37 @@ CRF 的模板都塞一个 `-crf`，而且对非 lib\* 编码器来说还会标�
   `pathTestSeq` 挡的是防抖下的乱序回包。
 - `PickFile` 是**只选不入队**的文件对话框。`AddFilesDialog` 也能选，但它的职责是把
   选中的东西塞进队列 —— 在模板编辑器里借它一问，问一个问题就多一个任务。
+
+### 参数说明挂在标题旁（`infoTip` / `bindInfoTips`）
+
+每一项的说明做成标题右边那颗圆圈图标，鼠标移上去（或键盘聚焦）弹一张卡片。
+
+**卡片不挂在字段旁边**，而是照 `.context-menu` 那套挂在 `document.body` 上
+（`position: fixed` + 边缘钳制）：模板编辑器那半边的滚动容器是 `.editor__body`
+（`overflow: auto`），绝对定位的浮层会被它整块裁掉 —— 而"说明只显示半截"比没有说明
+更难解释。说明内容（`.tip__src`）**常驻 DOM**、只是不显示：界面探针要数得到它
+（"说明漏了一条"和"这一项本来就没画出来"在截图上一模一样），变量 chip 也还是它自己
+那颗按钮。
+
+事件**整页委托一次**（`app.js` 里调一次 `bindInfoTips()`，走 `mouseover` / `focusin`）：
+模板编辑器每改一个字段就整块重画表单，逐个绑的话每次重画都得再绑一遍，而漏绑的症状是
+"这个图标点了没反应"，和"这一项本来就没有说明"长得一样。变量 chip 的复制也收在那一处
+—— 浮层挂在 body 上，`formEl.querySelectorAll` 够不着它（`templates.js` 里那段已删）。
+收起要慢半拍（`scheduleTipHide`，160ms）：鼠标从标题挪到卡片上那段路既不在标题里也不在
+卡片里，立刻收起就点不到卡片里的 chip。
+
+说明文案分三份（`sections.js` 的 `DEST_TIP` / `OUTPUT_VARS` / `MOVE_VARS`）：
+
+- **`DEST_TIP` 挂在 `dirField` 里，五段（主输出 + 四段搬迁）共用一份** —— 同一个下拉
+  在两处被解释成两个意思，比不解释更糟。
+- **`OUTPUT_VARS` 和 `MOVE_VARS` 必须分开**：`ExpandOutputPattern` 会把 `{ext}`
+  **删掉**（扩展名由「输出格式」决定），`ExpandPattern` 才认它。所以「输出文件名称」
+  那颗不能列 `{ext}` —— 列了就是把人引到一个写了不生效的框。`MOVE_VARS` 就是
+  `OUTPUT_VARS` 加一行，四处搬迁共用。
+- 顺手删掉了段尾那张 `.vargrid`：变量按钮现在住在对应的标题旁。
+
+回归：`_mock_check.mjs` 的「说明图标：…」九条钉住每段的颗数、五段共用同一句四档说明、
+以及 `{ext}` 只出现在搬迁侧。
 
 ### ffmpeg 参数顺序
 

@@ -167,10 +167,13 @@ f.addEventListener('load', function () {
       'input[name="prWarningPrefix"]',
       'input[name="prWarningSuffix"]',
       'input[name="prWarningKeepTree"]',
-      // 变量表：可点复制的 token，一行两个。数量对不上就是表格漏了变量。
-      '.vargrid .var-chip',
-      '.vargrid__cell',
-      '.vargrid__group',
+      // 标题旁的说明图标：五段「输出方式」各一颗 + 「输出文件名称」一颗 + 四段
+      // 「源文件新名称」各一颗。说明内容常驻 DOM（只是不显示），所以数得出来 ——
+      // 数量对不上就是某一段的说明没画出来，而这种事在截图上一点看不出来。
+      '.infotip',
+      '.infotip .tip__src',
+      '.infotip .tip__row',
+      '.infotip .var-chip',
       // 路径测试：填一个输入文件，结果区给出三条（源文件目录 / 输出目录 / 输出文件）。
       // 输入框刻意没有 name，量它必须按 data-role。
       '[data-role="path-test"]',

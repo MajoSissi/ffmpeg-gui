@@ -18,17 +18,18 @@ const (
 	OutputSame = "same" // 与源文件同目录
 	// OutputSibling 锚在**添加的那个目录**上：添加 D:/V 就只在 D:/ 旁边建一个
 	// 目录，整棵树的产物汇到那一个里去，形状靠 KeepTree 恢复。
+	//
+	// 第 55 批删掉了原来的第四档 OutputSiblingTop（锚在文件自己所在的目录上，于是
+	// 每个子目录各出一个产物目录）：两档只差一个锚，而"每个子目录旁边各建一个"在界
+	// 面上既说不清、也几乎没人要。解析层现在只认三档。
 	OutputSibling = "sibling"
-	// OutputSiblingTop 锚在**文件自己所在的目录**上：添加 D:/V、文件在 D:/V/1，
-	// 就在 D:/V/1 旁边建一个目录，于是每个子目录各出一个自己的。
-	OutputSiblingTop = "siblingTop"
-	OutputCustom     = "custom" // 指定的目录
+	OutputCustom  = "custom" // 指定的目录
 )
 
 // DefaultOutputSuffix is what OutputSibling appends when the user left both the
 // prefix and the suffix blank.
 //
-// 同级目录 with nothing added would name the file's own folder, so the 产物 would
+// 同级目录 with nothing added would name the anchor folder itself, so the 产物 would
 // land next to — and collide with — the input, which is the one thing a
 // destination rule must not do. One underscore is enough to keep them apart.
 const DefaultOutputSuffix = "_out"
@@ -38,25 +39,24 @@ const DefaultOutputSuffix = "_out"
 // and the problem files (failed / warning) all use it, so every stage answers
 // the same question the same way.
 type DirSpec struct {
-	Mode string `json:"mode"` // "" | same | sibling | siblingTop | custom
+	Mode string `json:"mode"` // "" | same | sibling | custom
 	// Dir is OutputCustom's directory, and what the user typed is what is used:
 	// nothing is appended to it, so "C:/video" is C:\video and not
 	// C:\video\<something>.
 	Dir string `json:"dir"`
-	// Prefix and Suffix wrap the anchor directory's name in the two sibling modes.
+	// Prefix and Suffix wrap the anchor directory's name in OutputSibling.
 	//
 	// 目录名被钉在路径的末尾，所以给"这个文件夹"加前缀只能连名字一起重写：把父
-	// 目录取出来，再把 前缀+名字+后缀 拼成一个新的同级目录名。两种同级只是锚不同
-	// （添加目录 / 文件所在目录），拼名的办法完全一样。
+	// 目录取出来，再把 前缀+名字+后缀 拼成那个新目录的名字。两个框都留空就补
+	// DefaultOutputSuffix，否则拼出来的名字和锚目录一模一样、产物会和输入撞在一起。
 	Prefix string `json:"prefix"`
 	Suffix string `json:"suffix"`
 	// KeepTree rebuilds the source's sub-directories under the directory the mode
 	// resolved to, so a folder dropped in whole comes back out with the shape it
 	// went in.
 	//
-	// 它对「原目录」没有意义（结构本来就在那里），对「同级顶层目录」也没有意义
-	// （锚就是文件自己的目录，相对自己是空路径）—— 前端据此把开关灰掉
-	// （`dirSpecHasRoom`）。
+	// 它对「原目录」没有意义：落点就是源目录本身，相对自己是空路径，没有一段可
+	// 以往回接 —— 前端据此把开关灰掉（`dirSpecHasRoom`）。
 	KeepTree bool `json:"keepTree"`
 }
 
@@ -98,14 +98,6 @@ func ResolveDestDir(req DestRequest) string {
 		return under(
 			filepath.Join(filepath.Dir(anchor), siblingName(req.Spec, anchor)),
 			req.SrcRoot, srcDir, req.Spec.KeepTree)
-	case OutputSiblingTop:
-		// 锚在**文件自己所在的目录**：添加 D:/V、文件在 D:/V/1，配上前缀后缀就
-		// 落在 D:/V/prefix_1_suffix —— 只看文件具体在哪，于是每个子目录各出一个
-		// 自己的产物目录。
-		//
-		// KeepTree 在这里是空的：锚就是文件自己的目录，相对自己是空路径。前端
-		// 也据此把这个开关灰掉。
-		return filepath.Join(filepath.Dir(srcDir), siblingName(req.Spec, srcDir))
 	case OutputCustom:
 		root := cleanDir(req.Spec.Dir)
 		if root == "" {
@@ -138,9 +130,9 @@ func siblingName(spec DirSpec, anchor string) string {
 	return prefix + leafName(anchor) + suffix
 }
 
-// under puts the source's own sub-directories back beneath root. Both sibling
-// modes and OutputCustom rebuild the tree that way: their anchor sits above the
-// file's own folder, so that folder's path *is* a sub-tree worth putting back.
+// under puts the source's own sub-directories back beneath root. OutputSibling and
+// OutputCustom both rebuild the tree that way: their anchor sits above the file's
+// own folder, so that folder's path *is* a sub-tree worth putting back.
 // OutputSame does not need it — the structure is already where it belongs.
 func under(root, srcRoot, srcDir string, keepTree bool) string {
 	if !keepTree {

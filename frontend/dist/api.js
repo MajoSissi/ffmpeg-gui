@@ -414,7 +414,6 @@ const OPTIONS = {
   destModes: [
     { value: 'same', label: '原目录' }, { value: 'custom', label: '自定义目录' },
     { value: 'sibling', label: '同级目录' },
-    { value: 'siblingTop', label: '同级顶层目录' },
   ],
   defaultOutputSuffix: '_out',
   existingActions: MOCK_RELOCATE,
@@ -1201,11 +1200,11 @@ const mock = {
     const own = !!tpl?.outputOverride;
     const spec = (own ? tpl.outDirSpec : g.outDirSpec) || {};
     const pattern = String((own ? tpl.outPattern : g.outPattern) || '').trim();
-    // 「输出方式」四种：原目录 / 自定义目录 / 同级目录 / 同级顶层目录
-    //（Go 侧 store.ResolveDestDir）。两个同级在这个面板里落点相同：Go 侧
-    // PreviewPaths 传的 SrcRoot 就是文件自己所在的目录，而同级顶层目录量的正是它
-    // —— 所以区别（添加目录 vs 所在目录）要等真的跑一批文件才看得出来，这里看不出
-    // 来不是 bug。保留目录结构在两种同级下都加不出东西，同理。
+    // 「输出方式」三种：原目录 / 自定义目录 / 同级目录（Go 侧 store.ResolveDestDir）。
+    // 「同级目录」量的是**添加的那个目录**，而这个面板里只有一个文件、没有"添加目录"
+    // 这一层：Go 侧 PreviewPaths 传的 SrcRoot 就是文件自己所在的目录，所以这里算出来
+    // 的和真跑一批文件可能差一层 —— notices 里那句话说的就是这件事。保留目录结构在这
+    // 个面板里也加不出东西（SrcRoot 就是 srcDir，相对子路径为空），同一个道理。
     const ds = {
       mode: String(spec.mode || ''),
       dir: String(spec.dir || ''),
@@ -1219,7 +1218,7 @@ const mock = {
       return `${d}${d.endsWith('\\') ? '' : '\\'}${b}`;
     };
     let outDir = srcDir;
-    if (ds.mode === 'sibling' || ds.mode === 'siblingTop') {
+    if (ds.mode === 'sibling') {
       const pre = ds.prefix.trim();
       const suf = ds.suffix.trim();
       outDir = winJoin(upOne(srcDir),

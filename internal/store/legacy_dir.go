@@ -85,7 +85,7 @@ func ruleFromLegacy(mode, dir, suffix string) (DirSpec, bool) {
 // specFromExpr translates one 第 34 ~ 38 批 的目录表达式.
 //
 // 那时表达式里可以写变量（{dirPath:-1}\123_{rootName} 之类），靠一次性拼字符串
-// 求值；现在只有"模式 + 字段"四种选择，装不下的表达式一律退到同级目录。之所以往
+// 求值；现在只有"模式 + 字段"三种选择，装不下的表达式一律退到同级目录。之所以往
 // 外退而不是往里退：产物落在源文件夹外面是这里唯一不能让的事，落进源文件夹的文件
 // 会在下一次扫描里被当成输入再吃一遍。
 func specFromExpr(path string, keepTree bool) DirSpec {

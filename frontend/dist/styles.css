@@ -415,30 +415,37 @@ button.chip:disabled { opacity: .42; cursor: not-allowed; filter: none; }
 .section__head .hint { font-size: 11px; color: var(--on-surface-dim); }
 .section__head .spacer { flex: 1; }
 
-/* 变量表。一行两个变量，每个都点了就复制 —— 表达式是要打进输入框的东西，让用户
-   照着屏幕手打花括号和大小写，就是在制造拼错的机会。
-   token 列是 auto 宽度，说明跟在后面，所以两列的说明各自对齐。 */
-.vargrid {
-  grid-column: 1 / -1;
-  margin-top: 4px;
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px 20px;
-  padding: 10px 12px;
-  background: var(--surface-2);
-  border-radius: var(--radius-s);
+/* 参数标题旁的说明图标。鼠标移上去（或键盘聚焦）弹一张卡片，把这一项的作用逐条列出来。
+   卡片本体（`.tip`）挂在 body 上、`position: fixed`：模板编辑器那半边的滚动容器是
+   `.editor__body`（`overflow: auto`），绝对定位的浮层会被它整块裁掉。 */
+.infotip {
+  display: inline-flex; align-items: center;
+  margin-left: 4px; vertical-align: middle;
+  color: var(--on-surface-dim); cursor: help;
+}
+.infotip .icon { width: 12px; height: 12px; }
+.infotip:hover, .infotip:focus-visible { color: var(--primary); outline: 0; }
+/* 说明内容常驻 DOM（探针要数得到，"说明漏了一条"和"这一项没画出来"在截图上一模一样），
+   只是不显示；变量 chip 也还是它自己那颗按钮。 */
+.tip__src { display: none; }
+
+.tip {
+  position: fixed; z-index: 95;
+  max-width: 330px; padding: 9px 11px;
+  display: grid; gap: 5px;
+  background: var(--surface-4); border: 1px solid var(--outline-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .55);
   font-size: 11.5px; color: var(--on-surface-var);
 }
-.vargrid__cell { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; min-width: 0; }
-.vargrid__cell > span { color: var(--on-surface-dim); }
-/* 按用途分组的小标题，横跨两列。分组不是排版偏好：目录表达式和输出文件名称是两个
-   不能混用的 token 集合，分不清该抄哪一组就会把 {name} 写进目录表达式。 */
-.vargrid__group {
-  grid-column: 1 / -1;
-  margin-top: 4px;
-  font-size: 11px; font-weight: 600; color: var(--on-surface-dim);
-  letter-spacing: .04em;
+.tip__title { font-size: 11.5px; color: var(--on-surface); }
+.tip__row { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; }
+.tip__row > span:last-child { color: var(--on-surface-dim); }
+.tip__term { font-weight: 500; color: var(--on-surface); white-space: nowrap; }
+.tip__foot {
+  padding-top: 5px; margin-top: 1px;
+  border-top: 1px solid var(--outline); color: var(--on-surface-dim);
 }
-.vargrid__group:first-child { margin-top: 0; }
 
 /* 路径测试。变量说明单独读是有歧义的（{rootDir} 到底是哪个目录？两个框都留空去哪？），
    代一个真实路径进去看结果比读十行字快。两条路径用等宽字体，因为它们的用途就是被

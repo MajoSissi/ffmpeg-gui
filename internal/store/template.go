@@ -132,7 +132,7 @@ type Template struct {
 	//（对应界面上的「与全局不同」）：为 false 时整段跟随，模板自己写的值被忽略；
 	// 为 true 时字段留空各自取最朴素的默认——方式留空 = 与源文件同目录，名称留空
 	// = 源文件名。段内不再有第二层「留空即跟随」。
-	OutDirSpec DirSpec `json:"outDirSpec"` // 产物放哪：原目录 / 自定义目录 / 同级目录 / 同级顶层目录
+	OutDirSpec DirSpec `json:"outDirSpec"` // 产物放哪：原目录 / 自定义目录 / 同级目录
 	OutPattern string  `json:"outPattern"` // 输出文件名称，如 {name}
 	// OutputOverride 记录这一段是不是被模板显式接管。关掉时整段跟随全局模板。
 	// 之所以用布尔量而不是指针，是因为输出段里没有「0 有意义」的字段——
@@ -209,10 +209,10 @@ func (t *Template) Normalize() {
 	default:
 		t.FilterMode = "vf"
 	}
-	// 一个模式管四个字段的哪些有意义，认不出的模式宁可退回"原目录"：那是唯一不
-	// 会写到别处去的答案。
+	// 一个模式管几个字段的哪些有意义，认不出的模式宁可退回"原目录"：那是唯一不
+	// 会写到别处去的答案。第 55 批删掉的 siblingTop 也走这条路 —— 不为它留翻译。
 	switch t.OutDirSpec.Mode {
-	case "", OutputSame, OutputSibling, OutputSiblingTop, OutputCustom:
+	case "", OutputSame, OutputSibling, OutputCustom:
 	default:
 		t.OutDirSpec.Mode = ""
 	}

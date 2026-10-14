@@ -122,7 +122,7 @@ eqCall('快照：字段顺序不同不算改动（后端结构体的顺序和页
  * 模板页那条只能这样验：`followHint` 是纯函数，可「跟随全局」的分支只在**非全局模板的
  * 某一段跟着全局**时才上屏，而 mock 里那个模板的那一段有自己的值 —— 界面探针走不到这里。
  */
-const { followHint } = await import(
+const { followHint, outputBody, filterBody, existingBody, problemsBody } = await import(
   'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/sections.js'
 );
 eqCall('模板页匹配条件：念的是「跳过」的边界', () => followHint('filter', {
@@ -130,6 +130,80 @@ eqCall('模板页匹配条件：念的是「跳过」的边界', () => followHin
 }), '跟随全局：跳过 <300 MB、跳过长边 >1280、跳过扩展名 webm/gif；被跳过的文件移动到源文件所在目录');
 eqCall('模板页匹配条件：没有条件时也不说「排除」', () => followHint('filter', { filter: {} }),
   '跟随全局：全部文件都处理，没有跳过条件');
+
+/**
+ * 参数标题旁的说明图标：五段「输出方式」+「输出文件名称」+ 四段「源文件新名称」。
+ *
+ * 为什么钉在纯函数这一层：说明内容**常驻 DOM**（只是不显示），所以界面探针数得到条数
+ * （`_drive.html` 的 `.infotip` / `.tip__row`）；但"某一段的说明内容本来就是另一段的"
+ * 在界面上长得一模一样 —— 比如把 `{ext}` 也写进「输出文件名称」，而那里
+ * `engine.ExpandOutputPattern` 会**删掉** `{ext}`，列出来就是把用户引到一个写了不生效的框。
+ */
+const SOPTS = {};
+const hits = (s, needle) => s.split(needle).length - 1;
+eqCall('说明图标：输出与命名两颗', () => hits(outputBody({}, SOPTS), 'class="infotip"'), 2);
+eqCall('说明图标：被跳过那段两颗', () => hits(filterBody({}, SOPTS), 'class="infotip"'), 2);
+eqCall('说明图标：已处理过的那段两颗', () => hits(existingBody({}, SOPTS), 'class="infotip"'), 2);
+eqCall('说明图标：错误 / 警告各两颗', () => hits(problemsBody({}, SOPTS), 'class="infotip"'), 4);
+// 五段共用同一句三档说明：同一个下拉在两处被解释成两个意思，比不解释更糟。
+eqCall('说明图标：五段的三档说明是同一句',
+  () => [outputBody, filterBody, existingBody, problemsBody]
+    .reduce((n, f) => n + hits(f({}, SOPTS), '在你添加的那个目录旁边新建一个'), 0), 5);
+// 顺序也是用户看到的东西：说明卡里那几行的次序就是下拉里那几项的次序，所以这里量的是
+// **有序列出**，不是"名字都出现过"。行数也一起钉住 —— 删掉一档却没有同步说明，剩下的
+// 三行看着照样对。
+eqCall('说明图标：三档的名字按下拉的顺序列（就三行）',
+  () => [...outputBody({}, SOPTS).matchAll(/class="tip__term">([^<]+)</g)].map((m) => m[1]),
+  ['原目录', '自定义目录', '同级目录']);
+// 第 55 批删掉的那一档不能在说明里留下名字：下拉里没有了它，说明里还列着就等于指给
+// 用户一个不存在的东西。说明内容**常驻 DOM**（只是不显示），所以这一条量得到。
+eqCall('说明图标：不列「同级汇总 / 同级逐层」那两个旧名',
+  () => /同级汇总|同级逐层/.test(outputBody({}, SOPTS)), false);
+// `{ext}` 只在搬迁侧（`ExpandPattern` 有它、`ExpandOutputPattern` 删它）。
+eqCall('说明图标：输出名称那颗不列 {ext}', () => hits(outputBody({}, SOPTS), '{ext}'), 0);
+eqCall('说明图标：四段搬迁名称都列了 {ext}',
+  () => [filterBody, existingBody, problemsBody]
+    .reduce((n, f) => n + hits(f({}, SOPTS), 'data-var="{ext}"'), 0), 4);
+eqCall('说明图标：每颗变量都带 data-var（点了能复制）',
+  () => hits(existingBody({}, SOPTS), 'data-var='), 5);
+
+/**
+ * 「输出方式」三档：`api.js` 的 `destModes` 是 Go 侧 `buildOptions()` 的**镜像**
+ *（它上头那两行写着 mirror verbatim）。两边各写一份字面量是"必须一致"这类断言躲不掉
+ * 的事（和 `ui.js` 的 `STATUS_META` ↔ `engine.Status.Label()` 一样），所以两边都钉：
+ * Go 侧那一份在 `app_test.go` 的 `TestDestModesMirrorTheThreeChoices`。
+ *
+ * 第 55 批删掉「同级逐层」时，漏掉这里的症状是**预览里能选到第四个、真程序只有一个**：
+ * 选了以后 Go 侧把它当认不出的模式，静默退回「原目录」——产物落进源文件夹里。
+ */
+eq('输出方式：mock 是 Go 那三档的镜像', (await api.bootstrap()).options.destModes, [
+  { value: 'same', label: '原目录' },
+  { value: 'custom', label: '自定义目录' },
+  { value: 'sibling', label: '同级目录' },
+]);
+
+/**
+ * 「同级目录」在预览里的落点也要对：`api.js` 的 `PreviewPaths` 是 Go 侧
+ * `app.PreviewPaths` 的镜像，而这一档正是**出包默认值** —— 它算错一次就是整批文件跑到
+ * 别处去。这一批只动了同级的**名字与那个被删的兄弟档**，所以顺带把它的两条性质钉住：
+ *
+ * 1. 落点 = 文件所在目录的同级 + 默认后缀（面板里没有"添加目录"这层，锚只能顶替）；
+ * 2. 开不开「保留目录结构」落点都一样 —— SrcRoot 就是 srcDir，相对自己是空路径。真跑
+ *    一批文件时这个开关当然有作用（`dir_test.go` 的
+ *    `TestResolveDestDirSiblingAnchorsOnAddedRoot` 钉的就是那边），预览里看不出来不是
+ *    bug，但**不能因为看不出来就被当成没用**。
+ */
+const gTpl = (await api.templates()).find((t) => t.global);
+const wantMmdOut = 'D:\\video\\mmd_out';
+eq('同级目录：落点 = 文件所在目录的同级 + 默认后缀',
+  (await api.previewPaths(gTpl, 'D:/video/mmd/a.mp4')).outputDir, wantMmdOut);
+eq('同级目录：预览里只有一个文件时，「保留目录结构」改不了落点',
+  (await api.previewPaths(
+    { ...gTpl, outDirSpec: { ...gTpl.outDirSpec, keepTree: false } }, 'D:/video/mmd/a.mp4',
+  )).outputDir, wantMmdOut);
+eq('同级目录：答案下面明说"锚只能拿文件自己的目录顶替"',
+  (await api.previewPaths(gTpl, 'D:/video/mmd/a.mp4')).notices
+    .some((s) => s.includes('「同级目录」')), true);
 
 /**
  * 状态的界面说法：`filtered` 和 `skipped` 必须**同一个词**，而且和 Go 那边一字不差。
@@ -797,8 +871,13 @@ eq('时间区间：只填日期 = 含那一整天（界面给不出这一档，�
 // 精度由**写法**决定：补上 `:00` 是那一"秒"那一格，和只写到分钟的"那一整分钟"差一个结果。
 // 界面走不到这一档（`datetime-local` 在秒为 0 时会把秒那一段省掉，实测过），但判据在这里，
 // 镜子写错了就没人拦得住。
+//
+// 基准要挑一条**秒数非 0** 的记录：mock 的时间戳跟着当前时间走，撞上整分钟时"补 :00"
+// 和"只到分钟"就是同一个区间，这条会假红 —— 60 次里撞一次，2026-10-14 撞过一次。
+const tick = allRecords.find((r) => localStamp(r.endedAt).slice(17) !== '00') || probe;
+const tickMin = localStamp(tick.endedAt).slice(0, 16);
 eq('时间区间：补上 :00 是那一秒，不是那一分钟',
-  has(await gotIds({ from: `${secs.slice(0, 16)}:00`, to: `${secs.slice(0, 16)}:00` })), false);
+  (await gotIds({ from: `${tickMin}:00`, to: `${tickMin}:00` })).includes(tick.id), false);
 // 手输一半的串（`2026-5-2` 那种）当作**这一端不设边界**：不清空整张表。
 eq('时间区间：填不成时间就当没有这个边界',
   (await gotIds({ from: '2026-5-2', to: '不是日期' })).length,

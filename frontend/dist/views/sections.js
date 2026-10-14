@@ -94,8 +94,54 @@ function actionOr(value, blank) {
   return String(value || '').trim() ? value : blank;
 }
 
-/** 序号宽度在两组里各出现一次，说法必须一字不差。 */
+/** 序号宽度两处都要念一遍（输出名称、搬迁名称），说法必须一字不差。 */
 const INDEX_DESC = '批次内序号；{index:3} 补零到三位（007），不写就是不补零；没有序号时留空';
+
+/**
+ * 「输出方式」三档各自是什么。
+ *
+ * 挂在这一段那颗说明图标里，而**五段**（主输出 + 四段搬迁）共用同一个 `dirField`，
+ * 所以说明也只有这一份 —— 同一个下拉在两处被解释成两个意思，比不解释更糟。
+ *
+ * 每行写的是"产物落在哪"，不是"这一档叫什么"：用户要判断的是**东西会跑到哪去**。
+ * 第 53 批这里有过第四档（「同级逐层」，锚在文件自己所在的目录上），第 55 批删了 ——
+ * 只剩三行，不必再按"一个 / 多个"分组。
+ */
+const DEST_TIP = {
+  title: '输出方式',
+  rows: [
+    { term: '原目录', text: '产物写在源文件旁边' },
+    { term: '自定义目录', text: '产物写进「目录」里填的那个目录，写什么就是什么' },
+    { term: '同级目录', text: '在你添加的那个目录旁边新建一个，整棵树的产物都汇进去' },
+  ],
+  foot: '「前缀」「后缀」只对同级目录有用，拼的是新建那个目录的名字；「保留目录结构」只对自定义目录和同级目录有用。',
+};
+
+/**
+ * 「输出文件名称」能用的变量。**没有 `{ext}`**：产物的扩展名由「输出格式」决定，
+ * 让它在两处都能写，同一个扩展名就有了两个来源。
+ */
+const OUTPUT_VARS = {
+  title: '可用变量（点击复制）',
+  rows: [
+    { token: '{name}', text: '源文件名，不含扩展名' },
+    { token: '{template}', text: '模板名' },
+    { token: '{dir}', text: '源文件所在目录的名字' },
+    { token: '{index}', text: INDEX_DESC },
+  ],
+  foot: '扩展名由「输出格式」决定，写在这里没有用。',
+};
+
+/**
+ * 搬迁时的「源文件新名称」：同一组变量再加 `{ext}`。被搬走的文件没有重新封装，
+ * 扩展名还是它自己的 —— 这正是这两组不能混用的原因
+ * （engine.ExpandPattern / ExpandOutputPattern 的 token 集不同）。
+ */
+const MOVE_VARS = {
+  ...OUTPUT_VARS,
+  rows: [...OUTPUT_VARS.rows, { token: '{ext}', text: '源文件的扩展名，不含点' }],
+  foot: '移动 / 复制时保持源文件自己的扩展名。',
+};
 
 const SECTION_META = {
   perf: { icon: 'speed', title: '处理性能' },
@@ -183,9 +229,6 @@ function relocatePhrase(action, dir, allowMark = false) {
  */
 function destLabel(spec) {
   const d = dirSpecOf(spec);
-  if (d.mode === 'siblingTop') {
-    return `到同级目录「${d.prefix}所在目录名${d.suffix}」（每个子目录各一个）`;
-  }
   const keep = d.keepTree ? '（保留目录结构）' : '';
   if (d.mode === 'sibling') {
     return `到同级目录「${d.prefix}所添加的目录名${d.suffix}」${keep}`;
@@ -259,7 +302,7 @@ export function filterBody(f, opts) {
   </div>
   <div class="grid grid--2">
     ${field('处理方式', selectHtml('fAction', opts.filterActions || [], actionOr(d.action, 'keep')))}
-    ${field('源文件新名称', `<input class="input mono" name="fRenamePattern" value="${esc(d.renamePattern || '')}" placeholder="{name}">`, '', 'span-2')}
+    ${field('源文件新名称', `<input class="input mono" name="fRenamePattern" value="${esc(d.renamePattern || '')}" placeholder="{name}">`, '', 'span-2', MOVE_VARS)}
   </div>
   ${dirField('fDir', d.dir, opts)}
   ${switchRow('覆盖同名文件', '关闭时自动追加 _1、_2', 'fOverwrite', !!d.overwrite)}`;
@@ -287,7 +330,7 @@ export function existingBody(e, opts) {
   </p>
   <div class="grid grid--2">
     ${field('处理方式', selectHtml('exAction', opts.existingActions || [], action))}
-    ${field('源文件新名称', `<input class="input mono" name="exPattern" value="${esc(d.pattern || '')}" placeholder="{name}">`, '移动 / 复制时保持原扩展名', 'span-2')}
+    ${field('源文件新名称', `<input class="input mono" name="exPattern" value="${esc(d.pattern || '')}" placeholder="{name}">`, '', 'span-2', MOVE_VARS)}
   </div>
   ${dirField('exDir', d.dir, opts, '移走后队列里的路径不变')}
   ${switchRow('覆盖目标目录里的同名文件', '关闭时自动追加 _1、_2', 'exOverwrite', !!d.overwrite)}`;
@@ -302,7 +345,7 @@ export function problemsBody(p, opts) {
   </div>
   <div class="grid grid--2">
     ${field('处理方式', selectHtml('prErrorAction', opts.problemActions || [], actionOr(d.errorAction, 'keep')))}
-    ${field('源文件新名称', `<input class="input mono" name="prErrorPattern" value="${esc(d.errorPattern || '')}" placeholder="{name}">`, '移动 / 复制时保持原扩展名', 'span-2')}
+    ${field('源文件新名称', `<input class="input mono" name="prErrorPattern" value="${esc(d.errorPattern || '')}" placeholder="{name}">`, '', 'span-2', MOVE_VARS)}
   </div>
   ${dirField('prErrorDir', d.errorDir, opts, '移走后队列里的路径不变')}
   <div class="section__head" style="border:0;padding:0;margin:18px 0 10px">
@@ -310,7 +353,7 @@ export function problemsBody(p, opts) {
   </div>
   <div class="grid grid--2">
     ${field('处理方式', selectHtml('prWarningAction', opts.problemActions || [], actionOr(d.warningAction, 'keep')))}
-    ${field('源文件新名称', `<input class="input mono" name="prWarningPattern" value="${esc(d.warningPattern || '')}" placeholder="{name}">`, '移动 / 复制时保持原扩展名', 'span-2')}
+    ${field('源文件新名称', `<input class="input mono" name="prWarningPattern" value="${esc(d.warningPattern || '')}" placeholder="{name}">`, '', 'span-2', MOVE_VARS)}
   </div>
   ${dirField('prWarningDir', d.warningDir, opts, '移走后队列里的路径不变')}`;
 }
@@ -320,11 +363,11 @@ export function outputBody(t, opts) {
   const d = t || {};
   return `
   <div class="grid grid--2">
-    ${field('输出文件名称', `<input class="input mono" name="outPattern" value="${esc(d.outPattern || '')}" placeholder="{name}">`)}
+    ${field('输出文件名称', `<input class="input mono" name="outPattern" value="${esc(d.outPattern || '')}" placeholder="{name}">`, '', '', OUTPUT_VARS)}
     ${containerField(d, opts)}
   </div>
   ${dirField('outDir', d.outDirSpec, opts)}
-  ${variablesNote()}`;
+  ${pathTest()}`;
 }
 
 /**
@@ -335,13 +378,15 @@ export function outputBody(t, opts) {
  * refreshEnabled()（templates.js）按方式灰掉，不在这里判断：一个渲染时就写死的
  * disabled 没法发现上面那个下拉刚刚改过。
  *
- * 两个同级只差**锚**：sibling 量你添加的那个目录（整棵树的产物汇到一处），
- * siblingTop 量文件自己所在的那一层（每个子目录各出一个）。前缀 / 后缀两个框在
- * 两种方式下都是同一套拼法，所以它们一起亮、一起灰。
+ * 同级目录量的是**你添加的那个目录**：产物落在它旁边，整棵树的产物汇到一处。前缀 /
+ * 后缀两个框只在它这一档有用 —— 由 templates.js 的 refreshEnabled() 一起亮、一起灰。
  *
  * 「留空」在这几个框里只有一个意思：最朴素的默认。段头那个「与全局不同」开关才是
  * 唯一的继承开关，字段级的回落等于在自己的段里又悄悄跟着全局，用户只能靠一行提示
  * 文字知道。
+ *
+ * 「输出方式」旁边那颗说明图标（DEST_TIP）列的是三档各自把产物放到哪 —— 这一段有
+ * 五个框、三种方式，光看下拉里那三个名字判断不出东西会跑到哪去。
  */
 function dirField(name, spec, opts, hint = '') {
   const p = dirParts(name);
@@ -349,7 +394,7 @@ function dirField(name, spec, opts, hint = '') {
   const text = ['留空 = 源文件同目录', hint].filter(Boolean).join(' · ');
   return `
   <div class="grid grid--3" style="margin-top:12px">
-    ${field('输出方式', selectHtml(p.mode, opts.destModes || [], d.mode || 'same'))}
+    ${field('输出方式', selectHtml(p.mode, opts.destModes || [], d.mode || 'same'), '', '', DEST_TIP)}
     ${field('前缀', `<input class="input mono" name="${p.prefix}" value="${esc(d.prefix)}" placeholder="例如 123_">`)}
     ${field('后缀', `<input class="input mono" name="${p.suffix}" value="${esc(d.suffix)}"
       placeholder="${esc(opts.defaultOutputSuffix || '_out')}">`)}
@@ -387,38 +432,13 @@ export function containerField(t, opts) {
 }
 
 /**
- * 变量表 + 路径测试 — the one place the variables are documented.
+ * 变量说明去哪了：`{name}` 那几颗按钮原来排在这一段最下面（`.vargrid`），现在住在
+ * **对应字段标题旁的说明图标**里（OUTPUT_VARS / MOVE_VARS）—— 说明和它管的那个
+ * 框挨在一起，用户不用在一段文字里回头找"这条说的是上面哪个框"。
  *
- * 变量**全部**列出来，按用途分两组。分组不是排版偏好：输出文件名称说*叫什么*，
- * 移动时的新名称说*搬走的那个叫什么*（它的 `{ext}` 是源扩展名，因为没有东西重新
- * 封装它），两个 token 集合不能混用，排成一长条的话用户没法知道该抄哪几个。
- * `{template}` 和 `{index}` 在两组里各出现一次是有意的 —— 每组都要能单独照着抄。
- *
- * 目录不在这张表里：它现在只有四种方式和两个填写框，没有可替换的东西。
- *
- * 每个变量都是一颗可以点的按钮：表达式是要**打进输入框**的东西，让用户照着屏幕
- * 手打一遍花括号和大小写，就是在制造拼错的机会。点一下拿到的就是原样的 token。
+ * 每个变量仍是一颗可以点的按钮，点了复制：表达式是要**打进输入框**的东西，让用户
+ * 照着屏幕手打一遍花括号和大小写，就是在制造拼错的机会。
  */
-function variablesNote() {
-  const groups = [
-    ['输出文件名称', [
-      ['{name}', '源文件名，不含扩展名'],
-      ['{template}', '模板名'],
-      ['{dir}', '源文件所在目录的名字'],
-      ['{index}', INDEX_DESC],
-    ]],
-    ['移动 / 复制源文件时的「源文件新名称」', [
-      ['{ext}', '源文件的扩展名，不含点'],
-    ]],
-  ];
-  return `
-  <div class="vargrid">
-    ${groups.map(([title, vars]) => `<div class="vargrid__group">${esc(title)}</div>
-      ${vars.map(([token, desc]) => `<div class="vargrid__cell">
-        ${varChip(token)}<span>${esc(desc)}</span></div>`).join('')}`).join('')}
-  </div>
-  ${pathTest()}`;
-}
 
 /**
  * 路径测试 — one input file, the rules above, the two resolved paths.
@@ -427,8 +447,8 @@ function variablesNote() {
  * 一个真实路径代进去看结果，比读十行说明快。它和 runner 走同一对函数
  * （engine.OutputRoot / engine.ResolveOutput），所以这里说的就是真跑一遍会做的。
  *
- * 面板里只有**一个**输入文件，没有「添加目录」这一层，所以两个同级在这里给出同一个
- * 答案（「同级目录」只能拿文件自己的目录顶替那个锚）。这一点写在答案下面，不靠猜。
+ * 面板里只有**一个**输入文件，没有「添加目录」这一层，所以「同级目录」只能拿文件自
+ * 己的目录顶替那个锚。这一点写在答案下面，不靠猜。
  *
  * 输入框**故意不带 `name`**：带 name 的控件在模板编辑器里就是模板字段，会写进
  * draft、会把表单标脏 —— 而这里填的只是一个用来试算的路径，不是模板的一部分。
@@ -463,10 +483,4 @@ export function pathCheckHtml(check, err) {
   return rows.map(([k, v]) => `<div class="pathtest__line">
       <span>${k}</span><code>${esc(v || '—')}</code></div>`).join('')
     + (c.notices || []).map((n) => `<div class="pathtest__note">${esc(n)}</div>`).join('');
-}
-
-/** 一个可复制的变量。点击的处理在 templates.js 里（它是模板编辑器的表单）。 */
-function varChip(token) {
-  return `<button type="button" class="var-chip" data-act="copy-var" data-var="${esc(token)}"
-    title="点击复制 ${esc(token)}">${esc(token)}</button>`;
 }
