@@ -15,8 +15,11 @@ import { profileSummary } from './filters.js';
  * 跑），而「暂停」在还没开始之前也一样。用户得先判断自己在哪个阶段，才能挑对那一颗 ——
  * 这是个可以省掉的判断，省掉的办法就是让按钮自己跟着走。
  *
- * 回到「开始」的**唯一**出路是「停止」（后端把 `armed` 清掉）。一批跑完之后仍然停在
- * 「暂停」上：队列还是活的，此时再加文件它会立刻开跑，所以那不是"回到未开始"。
+ * 回到「开始」有两条路：按「停止」（后端 `CancelAll` 清掉 `armed`），或者**这一批自己
+ * 跑完** —— 队列跑空之后 `armed` 也归零（`runner.go` 的 `settleLocked`，它挂在
+ * `emitState()` 上，所以每条改队列的路都会走到）。后一条是必须的：一批跑完还挂在
+ * 「暂停」上的话，那颗按钮按下去什么都不会发生（没有活可干），旁边的「停止」也停不了
+ * 任何东西 —— 两颗都是死按钮。
  *
  * 标签和动作从**同一个函数**里出，点击那边不许另算一遍 —— 分开算就有一次算错的机会，
  * 而算错的后果是按钮写着「暂停」、按下去却在开始队列。三条判据全在这里：
@@ -27,8 +30,8 @@ import { profileSummary } from './filters.js';
  * | `armed && !paused` | 暂停 | `Pause()` |
  * | `armed && paused` | 继续 | `Resume()` |
  *
- * 三态都不灰：每一态按下去都真的改变一样东西（开始 = 队列转活、暂停 = 按住不再接活、
- * 继续 = 放开）。空队列上按「开始」也一样 —— 它把队列转活，接着加进来的文件就自己跑。
+ * 「暂停」「继续」不灰：按下去都真的改变一样东西（按住不再接活 / 放开）。**只有「开始」
+ * 会灰** —— 没有排队中的任务时按下去屏幕上什么都不动，而"按了没反应"和"程序坏了"长得一样。
  */
 export function runButton(s) {
   // `!== false` 而不是 `!!`：这是原有写法，保留。`started` 是后加的字段（第 25 批之前
@@ -36,9 +39,10 @@ export function runButton(s) {
   // —— `boot()` 先等 `bootstrap()` 回来才 `paint()`，第一次上屏时 `stats` 已经是完整的一份。
   const started = s.started !== false;
   if (!started) {
-    // 没有「排队中」的任务就没得开：按下去只是把队列武装起来（`armed=true`），屏幕上
-    // 一行都不会动 —— 空队列上点它、和程序坏了，看起来是同一件事。这一档也能从别处
-    // 达到：点过「停止」之后，排队中的都被丢成「取消」，列表非空但依然没得开。
+    // 没有「排队中」的任务就没得开：按下去连队列都武装不起来（后端的 `settleLocked`
+    // 在 `emitState()` 里就把它清回去了），屏幕上一行都不会动 —— 空队列上点它、和程序
+    // 坏了，看起来是同一件事。这一档也能从别处达到：点过「停止」或者一批刚跑完，排队中
+    // 的都成了终态，列表非空但依然没得开。
     //
     // 判据是 `pending` 而不是 `total`：**有**几行不重要，有没有一行等着跑才重要。
     // total > 0 而 pending === 0（全是完成 / 取消 / 跳过）时按「开始」同样没有
@@ -64,8 +68,9 @@ export function runButton(s) {
  * 上**（`Runner.Disarm` 与 `CancelAll` 都只清 `armed`，见 runner.go），所以"未开始"
  * 和"停止之后"不需要各判一次 —— 它们本来就是同一个状态。
  *
- * 反过来说，"一批跑完了"**不是**这一档：队列还活着，之后加进来的文件会自己跑，
- * 那时候要回到这一档得按「停止」。
+ * **"一批跑完了"也落在这一档**：队列跑空之后 `settleLocked` 同样把 `armed` 清掉
+ * （挂在 `emitState()` 上，见 runner.go）。跑空之后队列手里已经没有行，清空它不会丢掉
+ * 任何还在排队的东西 —— 那时候拦着它的理由没有了。
  *
  * 读法照抄 `runButton()` 的 `s.started !== false`：载荷里没有 `started` 这个键时按
  * "已经开始了"处理。**灰着比亮着安全** —— 它管的是「清空」那颗不可撤销的按钮。
@@ -993,6 +998,18 @@ export function createTasksView(ctx) {
     runBtn.title = b.title;
     runBtn.classList.toggle('btn--filled', b.filled);
     runBtn.disabled = !!b.disabled;
+
+    // 「停止」也画在这里，而且**判据只读 stats**（`pending + running`）：没有排队中、
+    // 也没有处理中的任务时，它停不了任何东西。这一行原来在 `renderJobs()` 里，而那个函数
+    // 只有整表重绘才会跑 —— 任务一个个跑完只走 `job:update` / `queue:state`，于是最后
+    // 一个任务结束之后「停止」还亮着，按下去弹一个"将取消正在运行的任务"的确认框，可
+    // 队列里一行可停的都没有。stats 每次变动都会广播，画在这里就不会再落后于真实状态。
+    const stopBtn = el.querySelector('[data-act=stop]');
+    const canStop = (s.pending || 0) + (s.running || 0) > 0;
+    stopBtn.disabled = !canStop;
+    stopBtn.title = canStop
+      ? '取消排队中与处理中的任务，把队列退回未开始'
+      : '队列里没有可停止的任务';
   }
 
   /**
@@ -1217,7 +1234,9 @@ export function createTasksView(ctx) {
     // `[data-act=start].disabled = !canStart` —— 那一颗后来改名叫 `data-act=run`，这行就
     // 成了一个永远查不到元素的选择器（第 50 批删掉）。“空队列时开始该是灰的”这件事于是
     // 只剩需求没人做；现在它就是 `runButton()` 里的 `disabled`（判据 `pending === 0`）。
-    el.querySelector('[data-act=stop]').disabled = !all.some((j) => j.status === 'running' || j.status === 'preparing' || j.status === 'pending');
+    //
+    // 「停止」同理搬去了 `renderToolbar()`：它的判据只有 stats 里的 `pending + running`，
+    // 留在这里就会跟着整表重绘走，而任务跑完只发 `job:update` / `queue:state`。
     el.querySelector('[data-act=retry]').disabled = !all.some((j) => ['failed', 'canceled', 'skipped'].includes(j.status));
     el.querySelector('[data-act=clear-finished]').disabled = !hasFinished;
 

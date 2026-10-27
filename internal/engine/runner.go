@@ -153,11 +153,16 @@ type Runner struct {
 	emit     func(name string, payload any)
 	onRecord func(store.Record)
 
-	// armed is "the user pressed 开始". Workers exist as soon as a template is
-	// loaded so the pool is warm, but they must not touch a job until then --
-	// otherwise dropping a file onto the window starts encoding it, and there is
-	// no way back short of pressing 停止. paused is a different thing entirely:
-	// the queue was started and is being held back on purpose.
+	// armed is "the user pressed 开始 and there is still something to run". Workers
+	// exist as soon as a template is loaded so the pool is warm, but they must not
+	// touch a job until then -- otherwise dropping a file onto the window starts
+	// encoding it, and there is no way back short of pressing 停止. paused is a
+	// different thing entirely: the queue was started and is being held back on
+	// purpose.
+	//
+	// The "there is still something to run" half is enforced by settleLocked():
+	// a batch that has run dry puts the queue back to 未开始, so `armed` is never
+	// true over an empty queue.
 	armed     bool
 	paused    bool
 	stopping  bool
@@ -643,6 +648,10 @@ func (r *Runner) ResetFailed() int {
 
 // Start begins processing: it arms the queue and releases any pause. Pressing it
 // is the only thing that does -- adding files no longer starts work by itself.
+//
+// Arming a queue with nothing 排队中 is a no-op in practice: emitState() settles it
+// straight back to 未开始 (see settleLocked). That is the state the 开始 button is
+// greyed out in, so only the keyboard shortcut can get here.
 func (r *Runner) Start() {
 	r.mu.Lock()
 	r.ensureWorkersLocked(r.prov.ConcurrencyOrDefault())
@@ -661,6 +670,9 @@ func (r *Runner) Start() {
 // Disarm stops handing out jobs without touching the ones already running. It is
 // what 停止 uses to put the queue back in its initial state: a later Start then
 // means "go again" rather than resuming something the user never began.
+//
+// A batch that simply runs out gets there on its own -- settleLocked() does the
+// same thing from emitState(), without cancelling anything.
 func (r *Runner) Disarm() {
 	r.mu.Lock()
 	r.armed = false
@@ -958,8 +970,42 @@ func (r *Runner) statsLocked() Stats {
 	return s
 }
 
+// settleLocked puts the queue back to 未开始 once there is nothing left to do.
+//
+// `armed` means "the user pressed 开始 and this batch is still going". It used to
+// stay true after a batch ran dry, and that left the toolbar on 暂停 over an empty
+// queue: pressing it paused nothing, 停止 beside it was the only way back to 开始,
+// and a file dropped afterwards started encoding itself without anyone asking.
+// Nothing left to run is 未开始 -- 开始 again, 停止 greyed out, and the next file
+// waits for 开始 instead of quietly starting.
+//
+// One place only, because every mutation already ends in `emitState()` (Start /
+// Disarm / CancelAll / add / remove / a job finishing). Settling there is what
+// covers the paths that never call Disarm at all: removing the last 排队中 row, or
+// 开始 pressed on an empty queue through the keyboard shortcut.
+//
+// `paused` goes with it: a pause on a queue with nothing to hold is not a state
+// worth keeping, and leaving it set would show 「队列暂停」 on an idle queue.
+func (r *Runner) settleLocked() {
+	if r.anyRunningLocked() || r.anyPendingLocked() {
+		return
+	}
+	r.armed = false
+	r.paused = false
+}
+
+func (r *Runner) anyPendingLocked() bool {
+	for _, j := range r.jobs {
+		if j.Status == StatusPending {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Runner) emitState() {
 	r.mu.Lock()
+	r.settleLocked()
 	st := r.statsLocked()
 	emit := r.emit
 	r.mu.Unlock()

@@ -236,13 +236,15 @@ eqCall('状态说法：取消不是跳过那个色调',
   () => statusMeta('canceled').chip !== statusMeta('skipped').chip, true);
 
 /**
- * 队列那一颗按钮的状态机：**开始 → 暂停 → 继续**，回到「开始」的唯一条路是「停止」。
+ * 队列那一颗按钮的状态机：**开始 → 暂停 → 继续**。回到「开始」有两条路：「停止」，
+ * 以及**一批跑完**（后端 `emitState()` 里的 `settleLocked` 把 `armed` 清掉）。
  *
  * 为什么钉在这里：三态全是**看后端两个布尔量**推出来的，界面探针只能量到"此刻"那一个
  * （mock 开局就是 `started=true`），量不到另外两条支路；而支路写错的表现是"按钮写着
  * 暂停、按下去却在开始队列"—— 这种错在截图里一个像素都看不出来。
  *
- * 「停止之后」和「批次跑完」这两条必须都钉：它们的差别就是用户那条要求本身。
+ * 「停止之后」和「批次跑完」这两条必须都钉：前者靠 `CancelAll`，后者靠 `settleLocked`，
+ * 漏掉任何一条，跑完之后右上角就会挂着两颗按了没反应的按钮 —— 那就是用户报的问题。
  */
 const { runButton } = await import(
   'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/tasks.js'
@@ -250,10 +252,13 @@ const { runButton } = await import(
 eqCall('队列按钮：没开始过 = 开始', () => runButton({ started: false, pending: 3 }).label, '开始');
 eqCall('队列按钮：开始过、跑着 = 暂停', () => runButton({ started: true, paused: false, running: 1 }).label, '暂停');
 eqCall('队列按钮：开始过、按住了 = 继续', () => runButton({ started: true, paused: true, running: 1 }).label, '继续');
-// 停止（后端把 `armed` 清掉）是回到「开始」的唯一条路。
+// 停止（后端把 `armed` 清掉）是回到「开始」的第一条路。
 eqCall('队列按钮：停止之后回到开始', () => runButton({ started: false, paused: false }).label, '开始');
-// 反证：一批跑完不等于停止 —— 队列还是活的，之后加进来的文件会自己跑。
-eqCall('队列按钮：批次跑完仍停在暂停（不是回到开始）',
+// **批次跑完这一档不由前端改写**：队列跑空之后后端会先把 `armed` 清掉，所以
+// `started:true` 配 `pending:0 / running:0` 在真程序里不会存在。纯函数仍按表返回「暂停」
+// —— 判据留在后端一处，按钮这边不偷看 `pending` 自己"修正"成开始，否则就成了"按钮写着
+// 开始、后端还活着"：再加一个文件它会自己跑。
+eqCall('队列按钮：批次跑完这一档不由前端改写（后端会先退回未开始）',
   () => runButton({ started: true, paused: false, running: 0, pending: 0 }).label, '暂停');
 // 动作和标签出自同一个函数：动作错位就是"写着暂停、按下去在开始"。
 eqCall('队列按钮：只有未开始那一态的动作才是 start',
@@ -325,6 +330,10 @@ await api.removeJobs(keepJobs.map((j) => j.id));
 const emptySnap = await api.stats();
 eqCall('mock 队列：清空之后「开始」灰着', () => runButton(emptySnap).disabled, true);
 eqCall('mock 队列：清空之后 total 归零', () => emptySnap.total, 0);
+// **队列跑空了就是「未开始」**：Go 侧那句在 `emitState()` 里的 `settleLocked`（跑完一批、
+// 移走最后一行都走它），mock 在 `mockQueueStats()` 里照抄。少了这一条，预览里把行全移完
+// 之后按钮会停在「暂停」—— 真程序里它已经是「开始」了，而预览比真实现好看正是最坏的一种偏差。
+eqCall('mock 队列：清空之后回到未开始', () => emptySnap.started, false);
 // 还原：行塞回去、状态按 id 还回去，后面的断言看到的是同一个世界。
 (await api.jobs()).push(...keepJobs);
 for (const j of await api.jobs()) Object.assign(j, statBackup.get(j.id) || {});
@@ -380,20 +389,21 @@ eqCall('计数：字段缺席当 0',
 /**
  * 「清空」那颗按钮亮不亮（`queueIdle`）。
  *
- * 判据只有一条：后端的 `armed` 是空的 —— 「未开始」和「停止之后」落在同一个值上
- * （`Runner.Disarm` 与 `CancelAll` 都只清 `armed`），所以这里量"停止之后"和量"从没
- * 开始过"是同一个断言。
+ * 判据只有一条：后端的 `armed` 是空的 —— 「未开始」「停止之后」「一批跑完」落在同一个
+ * 值上（`Runner.Disarm` / `CancelAll` 都清 `armed`，跑空一批则由 `emitState()` 里的
+ * `settleLocked` 清），所以这里量"停止之后"和量"从没开始过"是同一个断言。
  *
- * 反过来那三条才是重点：**队列活着的时候它必须是灰的**。跑着、按着暂停、以及一批刚
- * 跑完（`armed` 还在 —— 队列还是活的，之后加进来的文件会自己跑）都算活着；写漏任何
- * 一条，用户就能在一片"还在转"的任务上按「清空」。
+ * 反过来那两条才是重点：**队列真的还在转的时候它必须是灰的**。跑着、按着暂停都算活着；
+ * 写漏任何一条，用户就能在一片"还在转"的任务上按「清空」。
  */
 eqCall('清空：还没开始过 = 可点', () => queueIdle({ started: false, total: 3 }), true);
 eqCall('清空：停止之后 = 可点', () => queueIdle({ started: false, paused: false, total: 3 }), true);
 eqCall('清空：跑着 = 灰着', () => queueIdle({ started: true, paused: false, running: 2 }), false);
 eqCall('清空：按着暂停 = 灰着', () => queueIdle({ started: true, paused: true }), false);
-// 一批跑完不等于停止：队列还活着，这会儿清空它等于把还在队列手里的行丢掉。
-eqCall('清空：一批跑完（队列仍armed）= 灰着',
+// `started:true` 配"没有一行待跑也没有一行在跑"这一档，后端不会让它停在那儿（`settleLocked`
+// 会先退回未开始），留着这条是钉住 `queueIdle` **只读 `started`**、不偷看计数 —— 判据一散
+// 成两处，"灰着还是亮着"就又有两个出处了。
+eqCall('清空：一批跑完（后端会先退回未开始）',
   () => queueIdle({ started: true, paused: false, running: 0, pending: 0, total: 9 }), false);
 // 反证：三态里只有 `started === false` 那一态亮着 —— 上面四条若都写成同一个词，这条报红。
 eqCall('清空：只有"没开始"那一态可点',

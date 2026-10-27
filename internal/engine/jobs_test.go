@@ -279,8 +279,106 @@ func TestQueueWaitsForStart(t *testing.T) {
 	if got := r.Jobs()[0].Status; got == StatusPending {
 		t.Error("开始 did not release the job")
 	}
-	if s := r.Stats(); !s.Started || s.Paused {
-		t.Errorf("after 开始: started=%v paused=%v", s.Started, s.Paused)
+	// 这个 runner 没有 ffmpeg，那个任务会很快失败收尾，而**队列一跑空就自己退回
+	// 未开始**（`emitState` 里的 `settleLocked`）。所以这里等的不是"停在开始"，而是
+	// "回到开始" —— 上一行只证明「开始」真的放行了任务，这一行证明放完就收摊。
+	settled := false
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := r.Stats(); !s.Started && !s.Paused {
+			settled = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !settled {
+		t.Errorf("batch ran dry but the queue stayed armed: %+v", r.Stats())
+	}
+}
+
+// 一批跑完之后，队列必须自己退回「未开始」：按钮上是「开始」而不是「暂停」，「停止」
+// 跟着灰掉，之后加进来的文件等「开始」而不是自己开跑。
+//
+// 这是用户报的那个问题本身 —— 跑完之后右上角还挂着「暂停」和「停止」，两颗都能点，
+// 点了什么也不会发生（队列里已经没有活可干）。判据落在后端而不是前端：只要 `armed`
+// 还亮着，"再加文件会自己跑"就是真的，前端把它画成「开始」就成了另一种谎。
+func TestQueueSettlesAfterBatch(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRunner()
+	r.Configure(Providers{}, nil, nil)
+	defer r.Shutdown()
+	r.EnsureWorkers(1)
+
+	first := filepath.Join(dir, "first.mp4")
+	if err := os.WriteFile(first, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := r.AddInputs([]InputItem{{Path: first}}, "t1", "x"); n != 1 {
+		t.Fatal("the file was not queued")
+	}
+
+	r.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := r.Stats(); !s.Started && s.Pending == 0 && s.Running == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s := r.Stats(); s.Started || s.Paused {
+		t.Fatalf("队列跑完之后仍停在开始状态: started=%v paused=%v", s.Started, s.Paused)
+	}
+	if got := r.Jobs()[0].Status; got == StatusPending || got == StatusPreparing || got == StatusRunning {
+		t.Fatalf("任务没有收尾: %q", got)
+	}
+
+	// 之后加进来的文件不许自己开跑 —— 「未开始」就是"等你按开始"。
+	next := filepath.Join(dir, "next.mp4")
+	if err := os.WriteFile(next, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := r.AddInputs([]InputItem{{Path: next}}, "t1", "x"); n != 1 {
+		t.Fatal("the second file was not queued")
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, j := range r.Jobs() {
+		if j.Input == next && j.Status != StatusPending {
+			t.Errorf("a file added after the batch ran dry started on its own (%q)", j.Status)
+		}
+	}
+	if s := r.Stats(); s.Started {
+		t.Error("adding a file armed the queue")
+	}
+}
+
+// 移走最后一行「排队中」的任务，队列同样要退回未开始 —— 那条路上没有 `Disarm`，
+// 靠的是 `emitState()` 里的 `settleLocked`。少了它，清完列表之后按钮还停在「暂停」，
+// 和跑完一批是同一种症状。
+func TestQueueSettlesWhenPendingRowsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRunner()
+	r.Configure(Providers{}, nil, nil)
+
+	full := filepath.Join(dir, "only.mp4")
+	if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := r.AddInputs([]InputItem{{Path: full}}, "t1", "x"); n != 1 {
+		t.Fatal("the file was not queued")
+	}
+	// 没有 worker 在跑（`NewRunner` 不建池），所以这里能稳稳拿到"武装着、一行待跑"那一档。
+	r.mu.Lock()
+	r.armed = true
+	r.mu.Unlock()
+	if s := r.Stats(); !s.Started {
+		t.Fatal("the queue was not armed")
+	}
+
+	if n := r.RemoveJobs([]string{r.Jobs()[0].ID}); n != 1 {
+		t.Fatalf("removed %d rows, want 1", n)
+	}
+	if s := r.Stats(); s.Started || s.Paused {
+		t.Errorf("emptying the queue left it armed: started=%v paused=%v", s.Started, s.Paused)
 	}
 }
 
@@ -294,11 +392,14 @@ func TestPauseHoldsQueueThenResumes(t *testing.T) {
 	r.Configure(Providers{}, nil, nil)
 	defer r.Shutdown()
 	r.EnsureWorkers(1)
-	r.Start()
 
-	if !r.TogglePause() {
-		t.Fatal("暂停 did not take effect")
-	}
+	// 空队列上的「开始」会被 `settleLocked` 立刻退回未开始（没活可干就不是"开始过"），
+	// 所以这里直接把队列摆成"活着、且被按住"那一刻。界面上走不到这条 —— 暂停在未开始
+	// 的队列上同样是空操作 —— 而这条测的是 `paused` 怎么拦住 `take()`，不是按钮。
+	r.mu.Lock()
+	r.armed = true
+	r.paused = true
+	r.mu.Unlock()
 
 	// A file queued while paused must stay pending: the pause is checked on the way
 	// out of take(), which is the only place a job can be handed to a worker.
@@ -319,8 +420,17 @@ func TestPauseHoldsQueueThenResumes(t *testing.T) {
 	if r.TogglePause() {
 		t.Error("继续 left the queue paused")
 	}
-	if s := r.Stats(); s.Paused || !s.Started {
-		t.Errorf("after 继续: paused=%v started=%v", s.Paused, s.Started)
+	if s := r.Stats(); s.Paused {
+		t.Errorf("after 继续: paused=%v", s.Paused)
+	}
+	// 反证：放开之后那个文件才会被取走。`started` 不在这里读 —— 这个 runner 没有
+	// ffmpeg，任务很快收尾，队列跑空就退回未开始了（见 `TestQueueSettlesAfterBatch`）。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && r.Jobs()[0].Status == StatusPending {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := r.Jobs()[0].Status; got == StatusPending {
+		t.Error("继续 did not release the queued file")
 	}
 
 	// 停止 puts the queue back to its initial state, so a later 开始 means "go"

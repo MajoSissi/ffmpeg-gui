@@ -80,6 +80,14 @@ func TestTrayTooltipTracksQueueState(t *testing.T) {
 			st:   engine.Stats{Total: 2, Done: 1, Warning: 1, Started: true},
 			want: "FFmpeg GUI — 2/2 完成",
 		},
+		{
+			// 一批跑完之后 `armed` 已经被 `settleLocked` 清掉，队列回到未开始 —— 但这时候
+			// 一行待跑的都没有，所以不补「未开始」：`2/2 完成 · 未开始` 读起来自相矛盾。
+			// 「未开始」只在真有活等着（`Pending > 0`）时念，和上面"刚拖进来还没开始"那条配对。
+			name: "跑完之后不补一句未开始",
+			st:   engine.Stats{Total: 2, Done: 1, Warning: 1},
+			want: "FFmpeg GUI — 2/2 完成",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

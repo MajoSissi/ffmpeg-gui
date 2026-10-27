@@ -174,17 +174,28 @@ const MOCK_STATE = {
  *
  * 只现算**由 jobs 决定**的那几项，`started` / `paused` / `workers` **故意**留着手写：
  * 它们是队列的开关状态，不是数出来的。`Running` 把 `preparing` 也算进去，和 Go 一致。
+ *
+ * 唯一的例外是"跑空了就退回未开始"：Go 侧那句在 `emitState()` 里的 `settleLocked`，
+ * 每条改队列的路都会走到。mock 没有 worker，任务也不会自己结束，所以能跑到这一步的
+ * 只有"把行移完 / 清空"—— 而它们同样得让预览里的按钮变回「开始」，否则预览比真实现
+ * 好看（真程序里「停止」已经灰了，预览里还亮着）。
  */
 function mockQueueStats() {
   const jobs = MOCK_STATE.jobs;
   const by = (st) => jobs.filter((j) => j.status === st).length;
   const terminal = (j) => ['done', 'warning', 'failed', 'canceled', 'skipped', 'filtered'].includes(j.status);
   const total = jobs.length;
+  const pending = by('pending');
+  const running = by('running') + by('preparing');
+  if (pending === 0 && running === 0) {
+    MOCK_STATE.stats.started = false;
+    MOCK_STATE.stats.paused = false;
+  }
   return {
     ...MOCK_STATE.stats,
     total,
-    pending: by('pending'),
-    running: by('running') + by('preparing'),
+    pending,
+    running,
     done: by('done'),
     warning: by('warning'),
     failed: by('failed'),

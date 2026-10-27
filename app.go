@@ -1973,7 +1973,10 @@ func trayTooltip(st engine.Stats) string {
 	switch {
 	case st.Paused:
 		parts = append(parts, "暂停")
-	case !st.Started:
+	// 「未开始」只在**真有活等着**的时候念（`Pending > 0`）。一批跑完之后队列同样是未开始
+	// —— `settleLocked` 把 `armed` 清掉了 —— 但那时候没有待跑的行，"2/2 完成 · 未开始"
+	// 读起来自相矛盾。悬停文字要回答的是"现在有没有事在动"，不是复述按钮的标签。
+	case !st.Started && st.Pending > 0:
 		parts = append(parts, "未开始")
 	case st.Running > 0:
 		parts = append(parts, fmt.Sprintf("%d 处理中", st.Running))
