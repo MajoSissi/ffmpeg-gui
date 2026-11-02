@@ -2,6 +2,7 @@
 package tray
 
 import (
+	"runtime"
 	"sync"
 
 	"fyne.io/systray"
@@ -67,7 +68,40 @@ func (c *Controller) Start() {
 	c.mu.Unlock()
 	// The left-click hook is installed from onReady instead: systray creates its
 	// window inside Run, so there is nothing to subclass until then.
-	go systray.Run(c.onReady, c.onExit)
+	go c.run()
+}
+
+// run is the tray's own thread, and it has to stay one thread.
+//
+// Everything systray.Run does -- CreateWindowEx, then the GetMessage /
+// DispatchMessage loop -- belongs to a single OS thread. Win32 window messages are
+// queued per thread, and GetMessage only ever returns messages from the queue of
+// the thread it is called on. The loop blocks inside GetMessage, which is a
+// syscall, and Go is allowed to resume a goroutine that was in a syscall on a
+// different M: after the syscall the runtime hands the goroutine to whichever
+// thread grabs a P first, and only keeps it on the same thread when one is free
+// right then (`exitsyscallfast`; otherwise the goroutine is put on the run queue
+// and the thread parks). A queue full of encoders -- pipe readers, progress
+// parsers, the history saver, GC -- is exactly the load where no P is free at that
+// moment, so the handoff does happen.
+//
+// The consequence is not a crash and not a visible change: the loop keeps running
+// happily, on a thread whose message queue is empty and always will be, while the
+// icon's clicks -- posted to the queue of the thread that created the *window* --
+// are dispatched by nobody. The icon stays on screen because explorer draws it,
+// not us, so the tray looks alive and answers neither button, not even the
+// menu. Permanently: the loop never comes back to the right thread on its own.
+// That is the "点了停止之后托盘左键右键都没反应" report, and it is why it turns
+// up under load rather than at startup.
+//
+// systray's own init() calls runtime.LockOSThread, but that locks the goroutine
+// that ran package init -- not this one. Its Windows test locks explicitly for the
+// same reason (systray_windows_test.go). With the lock, the runtime keeps this
+// goroutine on its thread across every blocking call in the loop.
+func (c *Controller) run() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	systray.Run(c.onReady, c.onExit)
 }
 
 // Stop tears the tray down.

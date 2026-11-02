@@ -287,6 +287,25 @@ unhandled rejection。但它覆盖的是**五个页面**（点一遍左侧栏）
   `installLeftClick` 看到 `trayPrevProc != 0` 就直接返回，新窗口根本没被子类化，
   旧过程还指着那个已经不存在的窗口。要把原过程还回去并清掉状态。
 
+- **跑 `systray.Run` 的那个 goroutine 必须 `runtime.LockOSThread()`。**
+  Win32 的消息**按线程排队**，`GetMessage` 只取「调用它的线程」的队列；而 `Run`
+  的循环阻塞在 `GetMessage`（一个 syscall），Go 允许这种 goroutine 醒来落在**另一个
+  M** 上 —— `exitsyscall` 只有当下就能拿到 P 时才留在原线程，拿不到就把 goroutine
+  丢进 runq、把线程 park。一批编码正在跑（管道读、进度解析、历史落盘、GC 都在抢 P）
+  正是"拿不到"的时刻。此后循环泵的是新线程的空队列，而点击消息堆在**创建窗口那条
+  线程**的队列里没人分发。
+  症状的形状很特定：**图标还在、主界面和任务都正常、左右键完全没反应（连菜单都不弹）、
+  重启才恢复**。图标不消失是因为它由 explorer 画，不是我们画 —— 看起来像"程序还活着，
+  只是点了没用"，所以容易往 `Shell_NotifyIcon` 互等那边查（那是另一条独立成因，
+  见上面 tooltip 两条）。出现在负载下而不是启动时，是这条的判断依据。
+  `systray` 自己的 `init()` 里有 `LockOSThread`，但那锁的是跑 package init 的
+  goroutine，**不是这一个**；它自己的 `systray_windows_test.go` 是显式锁的。
+  附带好处：`systray.Quit()` 投的 WM_CLOSE 一定落在泵消息的那条线程上。
+  不用点界面就能验证：`EnumWindows` 找同 pid 的 `SystrayClass` →
+  `SendMessageTimeoutW(WM_NULL, SMTO_ABORTIFHUNG)` 必须非 0（有人泵消息）→
+  `PostMessage(WM_USER+1, WM_LBUTTONUP)` 之后仍非 0 → `PostMessage(WM_COMMAND, 2)`
+  应触发菜单「退出」并 **exit 0**（这条顺带验证子类化转发到旧过程没坏）。
+
 - **子类化里两个「吞掉一切」的窗口期，都会表现为右键彻底没反应。**
   判据是 `trayWindowProc` 里那句 `prev == 0` —— 没有可转发的旧过程时，早期版本
   `return 0`，等于把那一条消息吃掉。两处会真的走到那里：
