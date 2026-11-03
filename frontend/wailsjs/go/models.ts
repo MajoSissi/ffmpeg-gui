@@ -861,6 +861,7 @@ export namespace store {
 	    dir: string;
 	    prefix: string;
 	    suffix: string;
+	    dirName: string;
 	    keepTree: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -873,6 +874,7 @@ export namespace store {
 	        this.dir = source["dir"];
 	        this.prefix = source["prefix"];
 	        this.suffix = source["suffix"];
+	        this.dirName = source["dirName"];
 	        this.keepTree = source["keepTree"];
 	    }
 	}

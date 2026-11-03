@@ -122,7 +122,7 @@ eqCall('快照：字段顺序不同不算改动（后端结构体的顺序和页
  * 模板页那条只能这样验：`followHint` 是纯函数，可「跟随全局」的分支只在**非全局模板的
  * 某一段跟着全局**时才上屏，而 mock 里那个模板的那一段有自己的值 —— 界面探针走不到这里。
  */
-const { followHint, outputBody, filterBody, existingBody, problemsBody } = await import(
+const { followHint, outputBody, filterBody, existingBody, problemsBody, dirFieldOf } = await import(
   'file:///D:/Code-Project/ffmpeg-gui/frontend/dist/views/sections.js'
 );
 eqCall('模板页匹配条件：念的是「跳过」的边界', () => followHint('filter', {
@@ -145,20 +145,25 @@ eqCall('说明图标：输出与命名两颗', () => hits(outputBody({}, SOPTS),
 eqCall('说明图标：被跳过那段两颗', () => hits(filterBody({}, SOPTS), 'class="infotip"'), 2);
 eqCall('说明图标：已处理过的那段两颗', () => hits(existingBody({}, SOPTS), 'class="infotip"'), 2);
 eqCall('说明图标：错误 / 警告各两颗', () => hits(problemsBody({}, SOPTS), 'class="infotip"'), 4);
-// 五段共用同一句三档说明：同一个下拉在两处被解释成两个意思，比不解释更糟。
-eqCall('说明图标：五段的三档说明是同一句',
+// 五段共用同一句四档说明：同一个下拉在两处被解释成两个意思，比不解释更糟。
+eqCall('说明图标：五段的四档说明是同一句',
   () => [outputBody, filterBody, existingBody, problemsBody]
     .reduce((n, f) => n + hits(f({}, SOPTS), '在你添加的那个目录旁边新建一个'), 0), 5);
 // 顺序也是用户看到的东西：说明卡里那几行的次序就是下拉里那几项的次序，所以这里量的是
 // **有序列出**，不是"名字都出现过"。行数也一起钉住 —— 删掉一档却没有同步说明，剩下的
-// 三行看着照样对。
-eqCall('说明图标：三档的名字按下拉的顺序列（就三行）',
+// 行看着照样对。
+eqCall('说明图标：四档的名字按下拉的顺序列（就四行）',
   () => [...outputBody({}, SOPTS).matchAll(/class="tip__term">([^<]+)</g)].map((m) => m[1]),
-  ['原目录', '自定义目录', '同级目录']);
+  ['原目录', '自定义目录', '同级目录名加前后缀', '同级目录名自定义']);
 // 第 55 批删掉的那一档不能在说明里留下名字：下拉里没有了它，说明里还列着就等于指给
 // 用户一个不存在的东西。说明内容**常驻 DOM**（只是不显示），所以这一条量得到。
 eqCall('说明图标：不列「同级汇总 / 同级逐层」那两个旧名',
   () => /同级汇总|同级逐层/.test(outputBody({}, SOPTS)), false);
+// 两档「同级」只差名字怎么来：说明里必须把"前缀/后缀"和"目录名"分别挂到对的那一档上，
+// 否则用户会以为它们落到不同的地方。
+eqCall('说明图标：两档同级的差别写的是名字来源',
+  () => /名字 = 前缀 \+ 添加目录的名字 \+ 后缀/.test(outputBody({}, SOPTS))
+    && /名字就是你填的「目录名」，不加前后缀/.test(outputBody({}, SOPTS)), true);
 // `{ext}` 只在搬迁侧（`ExpandPattern` 有它、`ExpandOutputPattern` 删它）。
 eqCall('说明图标：输出名称那颗不列 {ext}', () => hits(outputBody({}, SOPTS), '{ext}'), 0);
 eqCall('说明图标：四段搬迁名称都列了 {ext}',
@@ -168,42 +173,79 @@ eqCall('说明图标：每颗变量都带 data-var（点了能复制）',
   () => hits(existingBody({}, SOPTS), 'data-var='), 5);
 
 /**
- * 「输出方式」三档：`api.js` 的 `destModes` 是 Go 侧 `buildOptions()` 的**镜像**
+ * 「输出方式」四档：`api.js` 的 `destModes` 是 Go 侧 `buildOptions()` 的**镜像**
  *（它上头那两行写着 mirror verbatim）。两边各写一份字面量是"必须一致"这类断言躲不掉
  * 的事（和 `ui.js` 的 `STATUS_META` ↔ `engine.Status.Label()` 一样），所以两边都钉：
- * Go 侧那一份在 `app_test.go` 的 `TestDestModesMirrorTheThreeChoices`。
+ * Go 侧那一份在 `app_test.go` 的 `TestDestModesMirrorTheFourChoices`。
  *
  * 第 55 批删掉「同级逐层」时，漏掉这里的症状是**预览里能选到第四个、真程序只有一个**：
  * 选了以后 Go 侧把它当认不出的模式，静默退回「原目录」——产物落进源文件夹里。
  */
-eq('输出方式：mock 是 Go 那三档的镜像', (await api.bootstrap()).options.destModes, [
+eq('输出方式：mock 是 Go 那四档的镜像', (await api.bootstrap()).options.destModes, [
   { value: 'same', label: '原目录' },
   { value: 'custom', label: '自定义目录' },
-  { value: 'sibling', label: '同级目录' },
+  { value: 'sibling', label: '同级目录名加前后缀' },
+  { value: 'siblingName', label: '同级目录名自定义' },
 ]);
 
 /**
- * 「同级目录」在预览里的落点也要对：`api.js` 的 `PreviewPaths` 是 Go 侧
- * `app.PreviewPaths` 的镜像，而这一档正是**出包默认值** —— 它算错一次就是整批文件跑到
- * 别处去。这一批只动了同级的**名字与那个被删的兄弟档**，所以顺带把它的两条性质钉住：
+ * 「目录名」那颗框：名字必须能一路走到 DirSpec 的 `dirName`。
  *
- * 1. 落点 = 文件所在目录的同级 + 默认后缀（面板里没有"添加目录"这层，锚只能顶替）；
+ * 控件名 → 字段名这一步错了，症状是"填了、保存了、下次打开又是空的"，而且没有任何
+ * 报错 —— 值进了草稿的别的键（或者根上），模板里根本没有。五段各有一颗，所以逐个数：
+ * 主输出一颗，四段搬迁各一颗。
+ */
+eqCall('输出方式：五段都渲染出「目录名」框',
+  () => [outputBody, filterBody, existingBody, problemsBody]
+    .reduce((n, f) => n + hits(f({}, SOPTS), 'DirName"'), 0), 5);
+eq('输出方式：目录名控件写回 dirName（不是覆盖目录）',
+  ['out', 'ex', 'f', 'prError', 'prWarning'].map((s) => dirFieldOf(`${s}DirName`)),
+  ['dirName', 'dirName', 'dirName', 'dirName', 'dirName']);
+eq('输出方式：一段目录的每个控件都反查得到字段',
+  ['Mode', 'Dir', 'Prefix', 'Suffix', 'DirName', 'KeepTree'].map((k) => dirFieldOf(`out${k}`)),
+  ['mode', 'dir', 'prefix', 'suffix', 'dirName', 'keepTree']);
+eq('输出方式：不归目录那一段的控件反查为空',
+  ['outAction', 'outPattern', 'outName', 'exAction', 'mode'].map((n) => dirFieldOf(n)),
+  ['', '', '', '', '']);
+
+/**
+ * 两档「同级」在预览里的落点也要对：`api.js` 的 `PreviewPaths` 是 Go 侧
+ * `app.PreviewPaths` 的镜像，而「同级目录名加前后缀」正是**出包默认值** —— 它算错一次
+ * 就是整批文件跑到别处去。这里把两档共有的两条性质钉住：
+ *
+ * 1. 落点 = 文件所在目录的同级 + 那一档算出来的名字（面板里没有"添加目录"这层，锚只能
+ *    顶替）；
  * 2. 开不开「保留目录结构」落点都一样 —— SrcRoot 就是 srcDir，相对自己是空路径。真跑
  *    一批文件时这个开关当然有作用（`dir_test.go` 的
  *    `TestResolveDestDirSiblingAnchorsOnAddedRoot` 钉的就是那边），预览里看不出来不是
  *    bug，但**不能因为看不出来就被当成没用**。
+ *
+ * 自定义那一档再单独钉"名字原样用、前后缀不参与"：两个名字来源里有一个说了不算，
+ * 用户改了半天却看不出哪里变了。
  */
 const gTpl = (await api.templates()).find((t) => t.global);
 const wantMmdOut = 'D:\\video\\mmd_out';
-eq('同级目录：落点 = 文件所在目录的同级 + 默认后缀',
+eq('同级目录名加前后缀：落点 = 文件所在目录的同级 + 默认后缀',
   (await api.previewPaths(gTpl, 'D:/video/mmd/a.mp4')).outputDir, wantMmdOut);
-eq('同级目录：预览里只有一个文件时，「保留目录结构」改不了落点',
+eq('同级：预览里只有一个文件时，「保留目录结构」改不了落点',
   (await api.previewPaths(
     { ...gTpl, outDirSpec: { ...gTpl.outDirSpec, keepTree: false } }, 'D:/video/mmd/a.mp4',
   )).outputDir, wantMmdOut);
-eq('同级目录：答案下面明说"锚只能拿文件自己的目录顶替"',
+eq('同级：答案下面明说"锚只能拿文件自己的目录顶替"',
   (await api.previewPaths(gTpl, 'D:/video/mmd/a.mp4')).notices
-    .some((s) => s.includes('「同级目录」')), true);
+    .some((s) => s.includes('两种「同级」方式都按你添加的那个目录算')), true);
+
+const selTpl = (spec) => ({ ...gTpl, outDirSpec: { ...gTpl.outDirSpec, ...spec } });
+eq('同级目录名自定义：名字原样用',
+  (await api.previewPaths(selTpl({ mode: 'siblingName', dirName: '精选' }), 'D:/video/mmd/a.mp4')).outputDir,
+  'D:\\video\\精选');
+eq('同级目录名自定义：前后缀不参与',
+  (await api.previewPaths(
+    selTpl({ mode: 'siblingName', dirName: '精选', prefix: '123_', suffix: '_x' }), 'D:/video/mmd/a.mp4',
+  )).outputDir, 'D:\\video\\精选');
+eq('同级目录名自定义：名字留空 = 文件所在目录名 + 默认后缀',
+  (await api.previewPaths(selTpl({ mode: 'siblingName', dirName: '' }), 'D:/video/mmd/a.mp4')).outputDir,
+  wantMmdOut);
 
 /**
  * 状态的界面说法：`filtered` 和 `skipped` 必须**同一个词**，而且和 Go 那边一字不差。

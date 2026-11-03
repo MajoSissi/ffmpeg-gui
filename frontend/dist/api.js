@@ -43,7 +43,7 @@ function emitMock(event, payload) {
 const MOCK_GLOBAL = {
   id: 't-global', name: '全局模板', global: true,
   description: '所有模板的默认值。新建模板会以它为起点；模板里留空的项也跟随它。',
-  outDirSpec: { mode: 'sibling', dir: '', prefix: '', suffix: '_out', keepTree: true }, outPattern: '{name}',
+  outDirSpec: { mode: 'sibling', dir: '', prefix: '', suffix: '_out', dirName: '', keepTree: true }, outPattern: '{name}',
   outputOverride: true,
   perf: { concurrency: 2, logLevel: 'warning', retryCount: 0, threads: 0, idlePriority: false, deleteOnFail: true },
   // The global ships WITHOUT this section (store.DefaultGlobalTemplate leaves it
@@ -52,18 +52,18 @@ const MOCK_GLOBAL = {
   // seedSection produces when a user opens the section.
   existing: {
     action: 'keep',
-    dir: { mode: 'sibling', dir: '', prefix: '', suffix: '_done', keepTree: true },
+    dir: { mode: 'sibling', dir: '', prefix: '', suffix: '_done', dirName: '', keepTree: true },
     pattern: '{name}', overwrite: false,
   },
   filter: {
     minSizeMB: 300, maxSizeMB: 0, minLongEdge: 0, maxLongEdge: 0, minDuration: 0, maxDuration: 0,
     includeExts: [], excludeExts: [], action: 'move',
-    dir: { mode: 'custom', dir: 'D:/Media/small', prefix: '', suffix: '', keepTree: true },
+    dir: { mode: 'custom', dir: 'D:/Media/small', prefix: '', suffix: '', dirName: '', keepTree: true },
     renamePattern: '{name}', overwrite: false,
   },
   problems: {
-    errorAction: 'move', errorDir: { mode: 'custom', dir: 'D:/Media/error', prefix: '', suffix: '', keepTree: true },
-    warningAction: 'mark', warningDir: { mode: 'sibling', dir: '', prefix: '', suffix: '_warning', keepTree: true },
+    errorAction: 'move', errorDir: { mode: 'custom', dir: 'D:/Media/error', prefix: '', suffix: '', dirName: '', keepTree: true },
+    warningAction: 'mark', warningDir: { mode: 'sibling', dir: '', prefix: '', suffix: '_warning', dirName: '', keepTree: true },
   },
 };
 
@@ -424,7 +424,8 @@ const OPTIONS = {
   // differ from the real thing -- so the wording has to match, not just the values.
   destModes: [
     { value: 'same', label: '原目录' }, { value: 'custom', label: '自定义目录' },
-    { value: 'sibling', label: '同级目录' },
+    { value: 'sibling', label: '同级目录名加前后缀' },
+    { value: 'siblingName', label: '同级目录名自定义' },
   ],
   defaultOutputSuffix: '_out',
   existingActions: MOCK_RELOCATE,
@@ -1211,16 +1212,18 @@ const mock = {
     const own = !!tpl?.outputOverride;
     const spec = (own ? tpl.outDirSpec : g.outDirSpec) || {};
     const pattern = String((own ? tpl.outPattern : g.outPattern) || '').trim();
-    // 「输出方式」三种：原目录 / 自定义目录 / 同级目录（Go 侧 store.ResolveDestDir）。
-    // 「同级目录」量的是**添加的那个目录**，而这个面板里只有一个文件、没有"添加目录"
-    // 这一层：Go 侧 PreviewPaths 传的 SrcRoot 就是文件自己所在的目录，所以这里算出来
-    // 的和真跑一批文件可能差一层 —— notices 里那句话说的就是这件事。保留目录结构在这
-    // 个面板里也加不出东西（SrcRoot 就是 srcDir，相对子路径为空），同一个道理。
+    // 「输出方式」四档：原目录 / 自定义目录 / 同级目录名加前后缀 / 同级目录名自定义
+    //（Go 侧 store.ResolveDestDir）。两档「同级」量的是**添加的那个目录**，而这个面板
+    // 里只有一个文件、没有"添加目录"这一层：Go 侧 PreviewPaths 传的 SrcRoot 就是文件
+    // 自己所在的目录，所以这里算出来的和真跑一批文件可能差一层 —— notices 里那句话
+    // 说的就是这件事。保留目录结构在这个面板里也加不出东西（SrcRoot 就是 srcDir，相对
+    // 子路径为空），同一个道理。
     const ds = {
       mode: String(spec.mode || ''),
       dir: String(spec.dir || ''),
       prefix: String(spec.prefix || ''),
       suffix: String(spec.suffix || ''),
+      dirName: String(spec.dirName || ''),
     };
     // 两边都留空才补默认后缀：那是拼出来等于源目录名的唯一一种输入。
     // 盘根自带一个尾分隔符，直接加会多出一个（Go 侧 filepath.Join 会折掉）。
@@ -1234,6 +1237,11 @@ const mock = {
       const suf = ds.suffix.trim();
       outDir = winJoin(upOne(srcDir),
         `${pre}${leafName(srcDir)}${pre === '' && suf === '' ? '_out' : suf}`);
+    } else if (ds.mode === 'siblingName') {
+      // 名字就是用户填的那一个，前缀 / 后缀不参与；留空退回"目录名 + 默认后缀"
+      //（和 Go 侧 siblingCustomName 一样，理由是不能和源目录同名）。
+      const nm = ds.dirName.trim();
+      outDir = winJoin(upOne(srcDir), nm || `${leafName(srcDir)}_out`);
     } else if (ds.mode === 'custom' && ds.dir.trim()) {
       outDir = toWin(ds.dir.trim());
     }
@@ -1265,12 +1273,12 @@ const mock = {
       outPath = join(bump ? `${stem}_out${outExt ? `.${outExt}` : ''}` : plain);
     }
 
-    // notices 和 Go 侧 app.PreviewPaths 一一对应：没有扩展名那条，以及「同级目录」
+    // notices 和 Go 侧 app.PreviewPaths 一一对应：没有扩展名那条，以及两档「同级」
     // 那条（面板里没有"添加目录"这层，只能拿文件自己的目录顶上去）。
     const notices = [];
     if (!ext) notices.push('这个路径没有扩展名，「输出格式」留空时就定不下扩展名');
-    if (ds.mode === 'sibling') {
-      notices.push('「同级目录」按你添加的那个目录算，这里只能拿这个文件自己的目录代替 —— '
+    if (ds.mode === 'sibling' || ds.mode === 'siblingName') {
+      notices.push('两种「同级」方式都按你添加的那个目录算，这里只能拿这个文件自己的目录代替 —— '
         + '它真的从上一级目录添加的话，产物会落在更靠上一层的地方');
     }
 

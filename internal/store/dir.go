@@ -17,21 +17,28 @@ import (
 const (
 	OutputSame = "same" // 与源文件同目录
 	// OutputSibling 锚在**添加的那个目录**上：添加 D:/V 就只在 D:/ 旁边建一个
-	// 目录，整棵树的产物汇到那一个里去，形状靠 KeepTree 恢复。
+	// 目录，整棵树的产物汇到那一个里去，形状靠 KeepTree 恢复。名字由
+	// 前缀 + 添加目录的名字 + 后缀 拼出来，所以界面上叫「同级目录名加前后缀」。
 	//
 	// 第 55 批删掉了原来的第四档 OutputSiblingTop（锚在文件自己所在的目录上，于是
 	// 每个子目录各出一个产物目录）：两档只差一个锚，而"每个子目录旁边各建一个"在界
-	// 面上既说不清、也几乎没人要。解析层现在只认三档。
+	// 面上既说不清、也几乎没人要。
 	OutputSibling = "sibling"
-	OutputCustom  = "custom" // 指定的目录
+	// OutputSiblingName 和 OutputSibling 是同一个锚，唯一差别是**名字不再拼**：
+	// 用户填 DirName，填什么就是什么，前缀 / 后缀这两个字段在这一档里不参与。
+	//
+	// 单独一档而不是给 OutputSibling 加一个"忽略前后缀"的开关：名字的来源只有一处
+	// 才说得清 —— 否则界面上两个框亮着、算出来的却是别的，那种"看起来能填、填了不
+	// 生效"的字段正是这个下拉存在的理由。
+	OutputSiblingName = "siblingName"
+	OutputCustom      = "custom" // 指定的目录
 )
 
 // DefaultOutputSuffix is what OutputSibling appends when the user left both the
 // prefix and the suffix blank.
 //
-// 同级目录 with nothing added would name the anchor folder itself, so the 产物 would
-// land next to — and collide with — the input, which is the one thing a
-// destination rule must not do. One underscore is enough to keep them apart.
+// 一个名字都不加的话，新建的目录会和锚目录同名，产物就落进源文件夹里 —— 那是目的地
+// 规则唯一不能做的事，下一次扫描还会把它们当输入再吃一遍。一个下划线足够分开。
 const DefaultOutputSuffix = "_out"
 
 // DirSpec says where one stage writes its files. The main output, the files
@@ -39,7 +46,7 @@ const DefaultOutputSuffix = "_out"
 // and the problem files (failed / warning) all use it, so every stage answers
 // the same question the same way.
 type DirSpec struct {
-	Mode string `json:"mode"` // "" | same | sibling | custom
+	Mode string `json:"mode"` // "" | same | sibling | siblingName | custom
 	// Dir is OutputCustom's directory, and what the user typed is what is used:
 	// nothing is appended to it, so "C:/video" is C:\video and not
 	// C:\video\<something>.
@@ -51,6 +58,14 @@ type DirSpec struct {
 	// DefaultOutputSuffix，否则拼出来的名字和锚目录一模一样、产物会和输入撞在一起。
 	Prefix string `json:"prefix"`
 	Suffix string `json:"suffix"`
+	// DirName is OutputSiblingName's whole name, used verbatim: no prefix, no
+	// suffix, no anchor name. It is a *name* and not a path -- the parent is
+	// always the anchor's parent, which is what makes the two sibling modes
+	// answer the same "放在哪" question.
+	//
+	// 留空退回"锚目录名 + DefaultOutputSuffix"：同样是那个不能和源目录同名的理由，
+	// 而这里没有前缀 / 后缀可以借来区分。
+	DirName string `json:"dirName"`
 	// KeepTree rebuilds the source's sub-directories under the directory the mode
 	// resolved to, so a folder dropped in whole comes back out with the shape it
 	// went in.
@@ -64,7 +79,8 @@ type DirSpec struct {
 // predates the field" test in the legacy loader, nothing else.
 func (d DirSpec) IsZero() bool {
 	return d.Mode == "" && strings.TrimSpace(d.Dir) == "" &&
-		strings.TrimSpace(d.Prefix) == "" && strings.TrimSpace(d.Suffix) == "" && !d.KeepTree
+		strings.TrimSpace(d.Prefix) == "" && strings.TrimSpace(d.Suffix) == "" &&
+		strings.TrimSpace(d.DirName) == "" && !d.KeepTree
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +114,13 @@ func ResolveDestDir(req DestRequest) string {
 		return under(
 			filepath.Join(filepath.Dir(anchor), siblingName(req.Spec, anchor)),
 			req.SrcRoot, srcDir, req.Spec.KeepTree)
+	case OutputSiblingName:
+		// 同一个锚，只是名字由用户直接给。前缀 / 后缀在这一档**不读** —— 名字的唯一
+		// 来源就是 DirName，两个来源就会有一个说了不算。
+		anchor := anchorDir(req.SrcRoot, srcDir)
+		return under(
+			filepath.Join(filepath.Dir(anchor), siblingCustomName(req.Spec, anchor)),
+			req.SrcRoot, srcDir, req.Spec.KeepTree)
 	case OutputCustom:
 		root := cleanDir(req.Spec.Dir)
 		if root == "" {
@@ -130,9 +153,21 @@ func siblingName(spec DirSpec, anchor string) string {
 	return prefix + leafName(anchor) + suffix
 }
 
-// under puts the source's own sub-directories back beneath root. OutputSibling and
-// OutputCustom both rebuild the tree that way: their anchor sits above the file's
-// own folder, so that folder's path *is* a sub-tree worth putting back.
+// siblingCustomName is the folder name OutputSiblingName creates beside the anchor
+// folder: the one the user typed, and nothing else.
+//
+// 留空时退回"锚目录名 + 默认后缀"：和上面那一档同样的理由（不能和源目录同名），
+// 而这一档没有前缀 / 后缀可以借来区分，所以只能借默认后缀。空白字符也算没填。
+func siblingCustomName(spec DirSpec, anchor string) string {
+	if name := strings.TrimSpace(spec.DirName); name != "" {
+		return name
+	}
+	return leafName(anchor) + DefaultOutputSuffix
+}
+
+// under puts the source's own sub-directories back beneath root. The two sibling
+// modes and OutputCustom all rebuild the tree that way: their anchor sits above
+// the file's own folder, so that folder's path *is* a sub-tree worth putting back.
 // OutputSame does not need it — the structure is already where it belongs.
 func under(root, srcRoot, srcDir string, keepTree bool) string {
 	if !keepTree {

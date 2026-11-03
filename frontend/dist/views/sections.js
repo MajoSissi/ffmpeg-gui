@@ -68,6 +68,7 @@ export function dirSpecOf(v) {
     dir: String(d.dir || ''),
     prefix: String(d.prefix || ''),
     suffix: String(d.suffix || ''),
+    dirName: String(d.dirName || ''),
     keepTree: !!d.keepTree,
   };
 }
@@ -77,16 +78,38 @@ export function dirSpecOf(v) {
  *
  * The five places that write a file somewhere each get a stem — `outDir`,
  * `fDir`, `exDir`, `prErrorDir`, `prWarningDir` — and every one of them answers
- * the same four questions, so the names are derived from the stem rather than
+ * the same six questions, so the names are derived from the stem rather than
  * spelled out five times: a rule the editor and the write-back disagree about is
  * invisible until a field silently stops saving.
+ *
+ * `dirName` is the one that is a *name* and not a path: it belongs to
+ * 「同级目录名自定义」, where the folder name is typed in instead of being built
+ * from 前缀 / 后缀.
  */
 export function dirParts(name) {
   const stem = String(name).replace(/Dir$/, '');
   return {
     mode: `${stem}Mode`, dir: name, prefix: `${stem}Prefix`,
-    suffix: `${stem}Suffix`, keepTree: `${stem}KeepTree`,
+    suffix: `${stem}Suffix`, dirName: `${stem}DirName`, keepTree: `${stem}KeepTree`,
   };
+}
+
+/**
+ * 控件名反查 DirSpec 的字段名：`outDirName` → `dirName`，`exMode` → `mode`。
+ *
+ * 模板编辑器把表单写回草稿时只问这一个函数（templates.js 的 applySectionField）。
+ * 由 dirParts 反查而来，所以"加一个控件"只有一处要改；反查失败给空串，调用方据此
+ * 判断"这个控件不归目录那一段管"。这条映射错了的症状是**字段在表单里、模板里没有**：
+ * 改了、保存了、下次打开又是旧值，而且没有任何报错。
+ */
+export function dirFieldOf(control) {
+  const name = String(control);
+  const stem = name.replace(/(Mode|DirName|Dir|Prefix|Suffix|KeepTree)$/, '');
+  if (!stem || stem === name) return '';
+  for (const [key, ctrl] of Object.entries(dirParts(`${stem}Dir`))) {
+    if (ctrl === name) return key;
+  }
+  return '';
 }
 
 /** A blank action resolves to "leave it alone" in every section. */
@@ -98,23 +121,34 @@ function actionOr(value, blank) {
 const INDEX_DESC = '批次内序号；{index:3} 补零到三位（007），不写就是不补零；没有序号时留空';
 
 /**
- * 「输出方式」三档各自是什么。
+ * 默认后缀在界面这一侧的兜底值。
+ *
+ * 真正的出处是 Go 的 `store.DefaultOutputSuffix`，随 bootstrap 的
+ * `defaultOutputSuffix` 一起下来；这里只是"选项还没到"时的占位（mock 探针就是拿
+ * 空 opts 调这些纯函数的）。落一次名，是因为界面有三处要念它：后缀框的占位符、
+ * 「目录名」的提示、以及下面的摘要。
+ */
+const FALLBACK_SUFFIX = '_out';
+
+/**
+ * 「输出方式」四档各自是什么。
  *
  * 挂在这一段那颗说明图标里，而**五段**（主输出 + 四段搬迁）共用同一个 `dirField`，
  * 所以说明也只有这一份 —— 同一个下拉在两处被解释成两个意思，比不解释更糟。
  *
  * 每行写的是"产物落在哪"，不是"这一档叫什么"：用户要判断的是**东西会跑到哪去**。
- * 第 53 批这里有过第四档（「同级逐层」，锚在文件自己所在的目录上），第 55 批删了 ——
- * 只剩三行，不必再按"一个 / 多个"分组。
+ * 两档「同级」只差名字的来源（拼 vs 直接填），所以那两行也必须只差这一件事，否则
+ * 用户会以为它们落到不同的地方。
  */
 const DEST_TIP = {
   title: '输出方式',
   rows: [
     { term: '原目录', text: '产物写在源文件旁边' },
     { term: '自定义目录', text: '产物写进「目录」里填的那个目录，写什么就是什么' },
-    { term: '同级目录', text: '在你添加的那个目录旁边新建一个，整棵树的产物都汇进去' },
+    { term: '同级目录名加前后缀', text: '在你添加的那个目录旁边新建一个，名字 = 前缀 + 添加目录的名字 + 后缀，整棵树的产物都汇进去' },
+    { term: '同级目录名自定义', text: '同样建在你添加的那个目录旁边，但名字就是你填的「目录名」，不加前后缀' },
   ],
-  foot: '「前缀」「后缀」只对同级目录有用，拼的是新建那个目录的名字；「保留目录结构」只对自定义目录和同级目录有用。',
+  foot: '「前缀」「后缀」只对同级目录名加前后缀有用，「目录名」只对同级目录名自定义有用；「保留目录结构」只对后三档有用。',
 };
 
 /**
@@ -223,15 +257,18 @@ function relocatePhrase(action, dir, allowMark = false) {
 /**
  * 「到 <哪里>」 in words, for the follow summary and the toolbar chip.
  *
- * 同级目录 has no single path to print — the folder's own name is not known until
- * a file goes through it — so it is spelled out the way the rule is built instead
- * of guessing a name.
+ * 两档「同级」都没有一条能直接打出来的路径 —— 目录名要等文件过一遍、拿到"添加的
+ * 那个目录"的名字才定得下来（自定义那档倒是知道名字，但父目录同样要等）—— 所以
+ * 这里写出的是**规则**，不是猜一个名字。
  */
 function destLabel(spec) {
   const d = dirSpecOf(spec);
   const keep = d.keepTree ? '（保留目录结构）' : '';
   if (d.mode === 'sibling') {
-    return `到同级目录「${d.prefix}所添加的目录名${d.suffix}」${keep}`;
+    return `到同级「${d.prefix}所添加的目录名${d.suffix}」${keep}`;
+  }
+  if (d.mode === 'siblingName') {
+    return `到同级「${d.dirName.trim() || `所添加的目录名${FALLBACK_SUFFIX}`}」${keep}`;
   }
   if (d.mode === 'custom' && d.dir) return `到 ${d.dir}${keep}`;
   return '到源文件所在目录';
@@ -378,32 +415,36 @@ export function outputBody(t, opts) {
  * refreshEnabled()（templates.js）按方式灰掉，不在这里判断：一个渲染时就写死的
  * disabled 没法发现上面那个下拉刚刚改过。
  *
- * 同级目录量的是**你添加的那个目录**：产物落在它旁边，整棵树的产物汇到一处。前缀 /
- * 后缀两个框只在它这一档有用 —— 由 templates.js 的 refreshEnabled() 一起亮、一起灰。
+ * 两档「同级」量的是**你添加的那个目录**：产物落在它旁边，整棵树的产物汇到一处。
+ * 它们的差别只有名字从哪来 —— 加前后缀那一档亮「前缀」「后缀」，自定义那一档亮
+ * 「目录名」，由 refreshEnabled() 一起亮、一起灰。
  *
  * 「留空」在这几个框里只有一个意思：最朴素的默认。段头那个「与全局不同」开关才是
  * 唯一的继承开关，字段级的回落等于在自己的段里又悄悄跟着全局，用户只能靠一行提示
  * 文字知道。
  *
- * 「输出方式」旁边那颗说明图标（DEST_TIP）列的是三档各自把产物放到哪 —— 这一段有
- * 五个框、三种方式，光看下拉里那三个名字判断不出东西会跑到哪去。
+ * 「输出方式」旁边那颗说明图标（DEST_TIP）列的是四档各自把产物放到哪 —— 这一段有
+ * 六个框、四种方式，光看下拉里那四个名字判断不出东西会跑到哪去。
  */
 function dirField(name, spec, opts, hint = '') {
   const p = dirParts(name);
   const d = dirSpecOf(spec);
+  const suffix = opts.defaultOutputSuffix || FALLBACK_SUFFIX;
   const text = ['留空 = 源文件同目录', hint].filter(Boolean).join(' · ');
   return `
   <div class="grid grid--3" style="margin-top:12px">
     ${field('输出方式', selectHtml(p.mode, opts.destModes || [], d.mode || 'same'), '', '', DEST_TIP)}
     ${field('前缀', `<input class="input mono" name="${p.prefix}" value="${esc(d.prefix)}" placeholder="例如 123_">`)}
     ${field('后缀', `<input class="input mono" name="${p.suffix}" value="${esc(d.suffix)}"
-      placeholder="${esc(opts.defaultOutputSuffix || '_out')}">`)}
+      placeholder="${esc(suffix)}">`)}
   </div>
-  <div style="margin-top:10px">
+  <div class="grid grid--2" style="margin-top:10px">
     ${field('目录', `<div class="input-group">
       <input class="input mono" name="${p.dir}" value="${esc(d.dir)}" placeholder="例如 D:////Media">
       <button class="btn btn--outline btn--icon" data-act="pick-dir" data-target="${p.dir}">${icon('folderOpen')}</button>
-    </div>`, text, 'span-2')}
+    </div>`, text)}
+    ${field('目录名', `<input class="input mono" name="${p.dirName}" value="${esc(d.dirName)}" placeholder="例如 精选">`,
+      `完全自定义，不加前后缀 · 留空 = 所添加的目录名${suffix}`)}
   </div>
   <div style="margin-top:12px">${keepTreeSwitch(p.keepTree, spec)}</div>`;
 }
@@ -447,7 +488,7 @@ export function containerField(t, opts) {
  * 一个真实路径代进去看结果，比读十行说明快。它和 runner 走同一对函数
  * （engine.OutputRoot / engine.ResolveOutput），所以这里说的就是真跑一遍会做的。
  *
- * 面板里只有**一个**输入文件，没有「添加目录」这一层，所以「同级目录」只能拿文件自
+ * 面板里只有**一个**输入文件，没有「添加目录」这一层，所以两档「同级」都只能拿文件自
  * 己的目录顶替那个锚。这一点写在答案下面，不靠猜。
  *
  * 输入框**故意不带 `name`**：带 name 的控件在模板编辑器里就是模板字段，会写进

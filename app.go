@@ -1194,7 +1194,7 @@ func (a *App) PreviewPaths(t store.Template, srcPath string) (PathCheck, error) 
 
 	eff := t.Effective(a.GlobalTemplate())
 	// A single file has no added folder above it, so its own directory plays that
-	// part -- the same rule store.ResolveDestDir applies to 同级目录.
+	// part -- the same rule store.ResolveDestDir applies to the two sibling modes.
 	root := filepath.Dir(srcPath)
 	info := &media.Info{
 		Path:     srcPath,
@@ -1216,12 +1216,12 @@ func (a *App) PreviewPaths(t store.Template, srcPath string) (PathCheck, error) 
 	if info.Ext == "" {
 		check.Notices = append(check.Notices, "这个路径没有扩展名，「输出格式」留空时就定不下扩展名")
 	}
-	// 面板里没有「添加目录」这一层：「同级目录」量的是**添加的那个目录**，而这里只有
+	// 面板里没有「添加目录」这一层：两种「同级」量的是**添加的那个目录**，而这里只有
 	// 一个文件，只能拿它自己所在的目录顶上去 —— 文件真是从它的上级目录添加的时候，
 	// 真实落点比这里显示的更靠上一层。不说出来就像是算错了。
-	if eff.OutDirSpec.Mode == store.OutputSibling {
+	if eff.OutDirSpec.Mode == store.OutputSibling || eff.OutDirSpec.Mode == store.OutputSiblingName {
 		check.Notices = append(check.Notices,
-			"「同级目录」按你添加的那个目录算，这里只能拿这个文件自己的目录代替 —— "+
+			"两种「同级」方式都按你添加的那个目录算，这里只能拿这个文件自己的目录代替 —— "+
 				"它真的从上一级目录添加的话，产物会落在更靠上一层的地方")
 	}
 	if !fileExists(srcPath) {
@@ -1820,11 +1820,12 @@ type Options struct {
 	LogLevels       []Option `json:"logLevels"`
 	RateControls    []Option `json:"rateControls"`
 	PadColors       []Option `json:"padColors"`
-	// DestModes is the 「输出方式」 list: 原目录 / 自定义目录 / 同级目录.
+	// DestModes is the 「输出方式」 list: 原目录 / 自定义目录 / 同级目录名加前后缀 /
+	// 同级目录名自定义.
 	// It is the same choices in all four places that write a file somewhere, so it is
 	// defined once here rather than once per editor.
 	//
-	// DefaultOutputSuffix is the folder-name suffix 同级目录 falls back to
+	// DefaultOutputSuffix is the folder-name suffix 同级目录名加前后缀 falls back to
 	// when the editor's 前缀 / 后缀 are both blank. The frontend shows it as the
 	// suffix field's placeholder, so what the field says it will do and what the
 	// engine does are the same string.
@@ -2104,13 +2105,17 @@ func buildOptions() Options {
 			// the source file", and the blank one is what an unset section carries.
 			{store.OutputSame, "原目录"},
 			{store.OutputCustom, "自定义目录"},
-			// 同级目录 量的是**添加的那个目录**：产物落在它的**旁边**（树外面），不在
+			// 同级 量的是**添加的那个目录**：产物落在它的**旁边**（树外面），不在
 			// 树里面 —— "同级"两个字说的就是这件事。
 			//
-			// 这里第 53 批叫过「同级汇总」、第 55 批改回「同级目录」：当初和它并列的那一
-			// 档（同级逐层）在第 55 批删了，而"汇总"是**相对那一档**才说得通的词（一个 /
-			// 多个的对比）。只剩一档时，"同级"自己就把话说完了。
-			{store.OutputSibling, "同级目录"},
+			// 这两档只差"名字怎么来"：一档拼（前缀+目录名+后缀），一档用户直接给名
+			// 字。名字写进标题里而不是只靠说明卡解释 —— 选中哪一档决定了下面哪两个框
+			// 有用，而那两个框在界面上长年亮着（只是灰掉），光看「同级目录」猜不出来。
+			//
+			// 这一档第 53 批叫过「同级汇总」、第 55 批改回「同级目录」、后来又改成
+			// 「同级目录名加前后缀」（它旁边多了一档，名字得自己把话说全）。
+			{store.OutputSibling, "同级目录名加前后缀"},
+			{store.OutputSiblingName, "同级目录名自定义"},
 		},
 		DefaultOutputSuffix: store.DefaultOutputSuffix,
 

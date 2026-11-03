@@ -15,7 +15,7 @@ var (
 	dirDeep = filepath.Join(dirRoot, "mmd", "sub")
 )
 
-// 三种输出方式各给一条路，逐条钉住落在哪。这个函数是"产物写到哪"的**唯一**出口，
+// 四种输出方式各给一条路，逐条钉住落在哪。这个函数是"产物写到哪"的**唯一**出口，
 // 它算错一次就是整批文件跑到别处去。
 func TestResolveDestDirModes(t *testing.T) {
 	src := filepath.Join(dirDeep, "a.mp4")
@@ -63,6 +63,39 @@ func TestResolveDestDirSiblingName(t *testing.T) {
 		// 补一个默认后缀是这里唯一能让它们分开的办法。
 		{"两边都留空", DirSpec{Mode: OutputSibling}, filepath.Join(parent, "video_out")},
 		{"空白字符不算填了", DirSpec{Mode: OutputSibling, Prefix: "  ", Suffix: " "},
+			filepath.Join(parent, "video_out")},
+	}
+	for _, tc := range cases {
+		if got := ResolveDestDir(DestRequest{Spec: tc.spec, SrcPath: src, SrcRoot: dirRoot}); got != tc.want {
+			t.Errorf("%s: %+v -> %q, want %q", tc.name, tc.spec, got, tc.want)
+		}
+	}
+}
+
+// 「同级目录名自定义」：锚和上一档一模一样，名字不拼、直接用用户填的那个。
+//
+// 这一档存在的理由就是"前后缀表达不了的名字"（比如和源目录毫无关系的「精选」），
+// 所以最关键的两条是：填什么就是什么，以及前缀 / 后缀**不参与** —— 否则同一个名字
+// 会有两个来源，用户在界面上改了前缀却看不出哪里变了。
+func TestResolveDestDirSiblingCustomName(t *testing.T) {
+	src := filepath.Join(dirDeep, "a.mp4")
+	parent := filepath.Dir(dirRoot) // D:\
+	cases := []struct {
+		name string
+		spec DirSpec
+		want string
+	}{
+		{"自定义名字", DirSpec{Mode: OutputSiblingName, DirName: "精选"}, filepath.Join(parent, "精选")},
+		{"自定义名字 + 保留结构", DirSpec{Mode: OutputSiblingName, DirName: "精选", KeepTree: true},
+			filepath.Join(parent, "精选", "mmd", "sub")},
+		// 前后缀是上一档的字段，这一档读都不读。
+		{"填了前后缀也不参与", DirSpec{Mode: OutputSiblingName, DirName: "精选",
+			Prefix: "123_", Suffix: "_out"}, filepath.Join(parent, "精选")},
+		{"前后缀不参与（名字留空时也一样）",
+			DirSpec{Mode: OutputSiblingName, Prefix: "123_", Suffix: "_x"}, filepath.Join(parent, "video_out")},
+		// 留空退回"锚目录名 + 默认后缀"：名字和锚一样就等于产物落进源文件夹。
+		{"名字留空", DirSpec{Mode: OutputSiblingName}, filepath.Join(parent, "video_out")},
+		{"空白字符不算填了", DirSpec{Mode: OutputSiblingName, DirName: "   "},
 			filepath.Join(parent, "video_out")},
 	}
 	for _, tc := range cases {

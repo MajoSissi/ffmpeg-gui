@@ -5,7 +5,7 @@ import {
 } from '../ui.js';
 import {
   SECTIONS, sectionHead, followHint, perfBody, filterBody, problemsBody, outputBody,
-  containerField, existingBody, dirSpecOf, dirParts, pathCheckHtml,
+  containerField, existingBody, dirSpecOf, dirParts, dirFieldOf, pathCheckHtml,
 } from './sections.js';
 
 const GLOBAL_ID = 't-global';
@@ -525,17 +525,23 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
   }
 
   /** Every field name that belongs to one of the inheritable sections. */
+  /**
+   * 一段目录的那几个控件名，直接从 `dirParts` 取。
+   *
+   * 手抄这六个名字（外加新加的 `目录名`）意味着"加了控件但忘了加进这张表" ——
+   * `sectionOf` 找不到归属，值会写到草稿的根上，保存时被 Go 当成不认识的键丢掉，
+   * 症状是「改了、保存了、下次打开又是旧值」，全程没有报错。所以这里只写 stem。
+   */
+  const dirControls = (stem) => Object.values(dirParts(`${stem}Dir`));
+
   const SECTION_FIELDS = {
     perf: ['pConcurrency', 'pThreads', 'pRetryCount', 'pLogLevel', 'pIdlePriority', 'pDeleteOnFail'],
-    output: ['outMode', 'outDir', 'outPrefix', 'outSuffix', 'outKeepTree', 'outPattern'],
-    existing: ['exAction', 'exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
+    output: ['outPattern', ...dirControls('out')],
+    existing: ['exAction', 'exPattern', 'exOverwrite', ...dirControls('ex')],
     filter: ['fMinSizeMB', 'fMaxSizeMB', 'fMinDuration', 'fMaxDuration', 'fMinLongEdge', 'fMaxLongEdge',
-      'fIncludeExts', 'fExcludeExts', 'fAction', 'fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree',
-      'fRenamePattern', 'fOverwrite'],
-    problems: ['prErrorAction', 'prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix',
-      'prErrorKeepTree', 'prErrorPattern',
-      'prWarningAction', 'prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
-      'prWarningKeepTree', 'prWarningPattern'],
+      'fIncludeExts', 'fExcludeExts', 'fAction', 'fRenamePattern', 'fOverwrite', ...dirControls('f')],
+    problems: ['prErrorAction', 'prErrorPattern', 'prWarningAction', 'prWarningPattern',
+      ...dirControls('prError'), ...dirControls('prWarning')],
   };
 
   function sectionOf(name) {
@@ -600,60 +606,68 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     // file; 「留在原处」 would leave every one of these fields silently ignored.
     exAction: {
       keep: [],
-      move: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
-      copy: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exKeepTree', 'exPattern', 'exOverwrite'],
+      move: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exDirName', 'exKeepTree', 'exPattern', 'exOverwrite'],
+      copy: ['exMode', 'exDir', 'exPrefix', 'exSuffix', 'exDirName', 'exKeepTree', 'exPattern', 'exOverwrite'],
     },
     fAction: {
       keep: [],
-      move: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
-      copy: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
+      move: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fDirName', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
+      copy: ['fMode', 'fDir', 'fPrefix', 'fSuffix', 'fDirName', 'fKeepTree', 'fRenamePattern', 'fOverwrite'],
     },
     prErrorAction: {
       keep: [], mark: [],
-      move: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree', 'prErrorPattern'],
-      copy: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree', 'prErrorPattern'],
+      move: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorDirName',
+        'prErrorKeepTree', 'prErrorPattern'],
+      copy: ['prErrorMode', 'prErrorDir', 'prErrorPrefix', 'prErrorSuffix', 'prErrorDirName',
+        'prErrorKeepTree', 'prErrorPattern'],
     },
     prWarningAction: {
       keep: [], mark: [],
-      move: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
+      move: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix', 'prWarningDirName',
         'prWarningKeepTree', 'prWarningPattern'],
-      copy: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix',
+      copy: ['prWarningMode', 'prWarningDir', 'prWarningPrefix', 'prWarningSuffix', 'prWarningDirName',
         'prWarningKeepTree', 'prWarningPattern'],
     },
-    // 一段目录的哪几个框有意义，由「输出方式」决定：目录只对「自定义目录」有用，
-    // 前缀 / 后缀只对「同级目录」有用，「原目录」一个都用不上。灰掉而不是藏起来
-    // —— 藏起来的话用户得先猜"我这一版还有没有别的东西可填"。
+    // 一段目录的哪几个框有意义，由「输出方式」决定：目录只对「自定义目录」有用；
+    // 前缀 / 后缀只对「同级目录名加前后缀」有用；目录名只对「同级目录名自定义」有用；
+    // 「原目录」一个都用不上。灰掉而不是藏起来 —— 藏起来的话用户得先猜"我这一版
+    // 还有没有别的东西可填"。
     //
     // 主输出段没有动作开关在上面，所以这里只列出它那一份；`allowed` 里没有的字段
     // 谁都不去动它。
     //
-    // 「保留目录结构」在自定义目录和「同级目录」下都有意义：这两种方式的落点在源
-    // 目录**上方**，文件所在的那几层要靠它接回去；「原目录」的落点就是源目录本身
-    //（相对自己是空路径）—— 那一种由 dirSpecHasRoom 判掉，不必在这里再写一遍。
+    // 「保留目录结构」在后三档下都有意义：它们的落点在源目录**上方**，文件所在的那
+    // 几层要靠它接回去；「原目录」的落点就是源目录本身（相对自己是空路径）—— 那一种
+    // 由 dirSpecHasRoom 判掉，不必在这里再写一遍。
     outMode: {
       same: [],
       custom: ['outDir', 'outKeepTree'],
       sibling: ['outPrefix', 'outSuffix', 'outKeepTree'],
+      siblingName: ['outDirName', 'outKeepTree'],
     },
     exMode: {
       same: [],
       custom: ['exDir', 'exKeepTree'],
       sibling: ['exPrefix', 'exSuffix', 'exKeepTree'],
+      siblingName: ['exDirName', 'exKeepTree'],
     },
     fMode: {
       same: [],
       custom: ['fDir', 'fKeepTree'],
       sibling: ['fPrefix', 'fSuffix', 'fKeepTree'],
+      siblingName: ['fDirName', 'fKeepTree'],
     },
     prErrorMode: {
       same: [],
       custom: ['prErrorDir', 'prErrorKeepTree'],
       sibling: ['prErrorPrefix', 'prErrorSuffix', 'prErrorKeepTree'],
+      siblingName: ['prErrorDirName', 'prErrorKeepTree'],
     },
     prWarningMode: {
       same: [],
       custom: ['prWarningDir', 'prWarningKeepTree'],
       sibling: ['prWarningPrefix', 'prWarningSuffix', 'prWarningKeepTree'],
+      siblingName: ['prWarningDirName', 'prWarningKeepTree'],
     },
   };
 
@@ -693,7 +707,7 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
    * 这一段的方式能不能长出子树。
    *
    * 「原目录」不能：落点就是源目录本身，相对自己是空路径 —— 结构已经在那里，没有
-   * 一段可以往回接。另两种（自定义目录 / 同级目录）的落点在源目录**上方**，文件所
+   * 一段可以往回接。后三档（自定义目录 / 两档同级）的落点在源目录**上方**，文件所
    * 在的那几层要靠这个开关接回去；关掉的话整棵树的文件贴平到同一个目录里，重名就
    * 得靠 _1、_2 挡。
    */
@@ -796,16 +810,16 @@ ${inheritableSection('problems', d, g, o, problemsBody)}
     const s = draft[sec] || (draft[sec] = seedSection(sec, globalTemplate()));
     const num = (x) => Number(x || 0);
     const exts = (x) => String(x).split(',').map((y) => y.trim()).filter(Boolean);
-    // 一段目录的五个控件写的是同一段数据，所以合成一个入口：分成五支的话，
+    // 一段目录的六个控件写的是同一段数据，所以合成一个入口：分成六支的话，
     // "改了前缀但方式没跟上"就成了只有用户能发现的 bug。控件名 -> DirSpec 字段的
-    // 对应关系是把 sections.js 的 dirParts 反过来查，两边不可能各写一份。
-    const stem = name.replace(/(Mode|Dir|Prefix|Suffix|KeepTree)$/, '');
-    const dirKey = Object.fromEntries(Object.entries(dirParts(`${stem}Dir`)).map(([k, v]) => [v, k]));
-    const withDir = (spec) => ({ ...dirSpecOf(spec), [dirKey[name]]: v });
+    // 对应关系由 sections.js 的 dirFieldOf 反查 dirParts，两边不可能各写一份。
+    // 空串 = 这个名字不归目录那一段管（动作开关、名称表达式等等）。
+    const dirField = dirFieldOf(name);
+    const withDir = (spec) => ({ ...dirSpecOf(spec), [dirField]: v });
 
     if (sec === 'output') {
       // Flat fields on the draft itself, named the same as the template's JSON keys.
-      if (name in dirKey) draft.outDirSpec = withDir(draft.outDirSpec);
+      if (dirField) draft.outDirSpec = withDir(draft.outDirSpec);
       else draft[name] = v;
       draft.outputOverride = true;
       return;
